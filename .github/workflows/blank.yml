@@ -1,0 +1,53 @@
+name: Build Portable Binaries
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        target:
+          - node16-win-x64
+          - node16-android-arm
+          - node16-android-arm64
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Get current date
+      id: date
+      run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+    
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+    
+    - name: Install dependencies
+      run: |
+        npm ci
+        npm install -g pkg
+    
+    - name: Build binary
+      run: |
+        pkg src/index.js --targets ${{ matrix.target }} -o telegram-file-server-${{ matrix.target }}
+    
+    - name: Create Release
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: "telegram-file-server-${{ matrix.target }}*"
+        tag: "v${{ github.run_number }}-${{ matrix.target }}-${{ steps.date.outputs.date }}"
+        name: "Telegram File Server ${{ matrix.target }} - ${{ steps.date.outputs.date }}"
+        body: "Automated build for ${{ matrix.target }} architecture"
+        token: ${{ secrets.GITHUB_TOKEN }}
+      
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: telegram-file-server-${{ matrix.target }}
+        path: telegram-file-server-${{ matrix.target }}*
