@@ -1,0 +1,17 @@
+{
+    "apiId": 50322,
+    "apiHash": "9ff1a639196c0779c86dd661af8522ba",
+    "stringSession": null,
+    "phoneNumber": null,
+    "port": 8000,
+    "logLevel": "info",
+    "authentication": {
+        "twoFactorEnabled": false,
+        "maxLoginAttempts": 3
+    },
+    "fileStreaming": {
+        "maxFileSize": 1073741824,
+        "chunkSize": 65536,
+        "timeout": 30000
+    }
+}

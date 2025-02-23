@@ -1,0 +1,17 @@
+{
+  "apiId": 50322,
+  "apiHash": "9ff1a639196c0779c86dd661af8522ba",
+  "stringSession": "1BAAOMTQ5LjE1NC4xNjcuOTEBu1NAx8zSM/lOGCC/+SWXFVilCF/7RrnQuM/ud7igkY5IhgBulHuSofnzkxW6c04PljL2TdZRzBNDoErTTtsXjyjydOkOOfTAvFWVqbJ66Os3rUvHOq0MWiVotEuHf2Kd4XrY5T9KsWz0FrCXfTJxzS7mIOslrZw/Bg4wV3PHDyPQi91c2NKleQWTLWy96+Cf5PAOiJ0KK0LG+MSZ3LrRO8tjrMqtjbtwvcJyWe5lCRT1Zst9QbCbBfpuIWRciPYC1YfOItj0MipS8ae9NxPcUGO3aOuCMWOtiFcUfBpsHD2ARMurtUyw3JzRqx/tb3qefxXPF+gMLYVXXGl92NKl12o=",
+  "phoneNumber": null,
+  "port": 8000,
+  "logLevel": "info",
+  "authentication": {
+    "twoFactorEnabled": false,
+    "maxLoginAttempts": 3
+  },
+  "fileStreaming": {
+    "maxFileSize": 1073741824,
+    "chunkSize": 65536,
+    "timeout": 30000
+  }
+}
