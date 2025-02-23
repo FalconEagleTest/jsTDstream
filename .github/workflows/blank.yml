@@ -33,6 +33,19 @@ jobs:
       with:
         node-version: 16
     
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          gcc-arm-linux-gnueabihf \
+          gcc-aarch64-linux-gnu \
+          g++-arm-linux-gnueabihf \
+          g++-aarch64-linux-gnu \
+          crossbuild-essential-arm64 \
+          crossbuild-essential-armhf \
+          python3
+    
     - name: Install dependencies
       run: |
         npm ci
@@ -40,7 +53,10 @@ jobs:
     
     - name: Build binary
       run: |
-        nexe src/index.js -o telegram-file-server-${{ matrix.os }} --target ${{ matrix.target }} --build
+        CFLAGS="-fPIC" CXXFLAGS="-fPIC" nexe src/index.js -o telegram-file-server-${{ matrix.os }} --target ${{ matrix.target }} --build
+      env:
+        CC: gcc
+        CXX: g++
     
     - name: Create Release
       uses: softprops/action-gh-release@v2
