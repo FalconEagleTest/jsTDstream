@@ -17,14 +17,14 @@ jobs:
           - node16-android-arm64
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Get current date
       id: date
       run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
     
     - name: Use Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: 16
     
@@ -38,16 +38,18 @@ jobs:
         pkg src/index.js --targets ${{ matrix.target }} -o telegram-file-server-${{ matrix.target }}
     
     - name: Create Release
-      uses: ncipollo/release-action@v1
+      uses: softprops/action-gh-release@v2
       with:
-        artifacts: "telegram-file-server-${{ matrix.target }}*"
-        tag: "v${{ github.run_number }}-${{ matrix.target }}-${{ steps.date.outputs.date }}"
-        name: "Telegram File Server ${{ matrix.target }} - ${{ steps.date.outputs.date }}"
-        body: "Automated build for ${{ matrix.target }} architecture"
-        token: ${{ secrets.GITHUB_TOKEN }}
+        files: telegram-file-server-${{ matrix.target }}*
+        tag_name: v${{ github.run_number }}-${{ matrix.target }}-${{ steps.date.outputs.date }}
+        name: Telegram File Server ${{ matrix.target }} - ${{ steps.date.outputs.date }}
+        body: Automated build for ${{ matrix.target }} architecture
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: telegram-file-server-${{ matrix.target }}
         path: telegram-file-server-${{ matrix.target }}*
+        compression-level: 0  # Disable compression for speed
