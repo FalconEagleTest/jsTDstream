@@ -11,10 +11,13 @@ jobs:
     
     strategy:
       matrix:
-        target:
-          - node16-win-x64
-          - node16-android-arm
-          - node16-android-arm64
+        include:
+          - target: win-x64
+            os: windows
+          - target: linux-arm
+            os: android
+          - target: linux-arm64
+            os: android
 
     steps:
     - uses: actions/checkout@v4
@@ -35,21 +38,21 @@ jobs:
     
     - name: Build binary
       run: |
-        pkg src/index.js --targets ${{ matrix.target }} -o telegram-file-server-${{ matrix.target }}
+        pkg src/index.js --targets node16-${{ matrix.target }} -o telegram-file-server-${{ matrix.os }}
     
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        files: telegram-file-server-${{ matrix.target }}*
-        tag_name: v${{ github.run_number }}-${{ matrix.target }}-${{ steps.date.outputs.date }}
-        name: Telegram File Server ${{ matrix.target }} - ${{ steps.date.outputs.date }}
-        body: Automated build for ${{ matrix.target }} architecture
+        files: telegram-file-server-${{ matrix.os }}*
+        tag_name: v${{ github.run_number }}-${{ matrix.os }}-${{ steps.date.outputs.date }}
+        name: Telegram File Server ${{ matrix.os }} - ${{ steps.date.outputs.date }}
+        body: Automated build for ${{ matrix.os }} architecture
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: telegram-file-server-${{ matrix.target }}
-        path: telegram-file-server-${{ matrix.target }}*
-        compression-level: 0  # Disable compression for speed
+        name: telegram-file-server-${{ matrix.os }}
+        path: telegram-file-server-${{ matrix.os }}*
+        compression-level: 0
