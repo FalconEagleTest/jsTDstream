@@ -12,12 +12,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: linux-x64
-            os: linux
           - target: win-x64
-            os: windows
-          - target: linux-arm64
-            os: android
+            os: windows64
+          - target: win-x86
+            os: windows32
+          - target: android-arm64
+            os: android64
+          - target: android-arm
+            os: android32
 
     steps:
     - uses: actions/checkout@v4
@@ -26,7 +28,7 @@ jobs:
       id: date
       run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
     
-    - name: Use Node.js
+    - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
         node-version: 16
@@ -38,7 +40,7 @@ jobs:
     
     - name: Build binary
       run: |
-        nexe src/index.js -o telegram-file-server-${{ matrix.os }} --target ${{ matrix.target }}
+        nexe src/index.js -o telegram-file-server-${{ matrix.os }} --target ${{ matrix.target }} --build
     
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -46,7 +48,7 @@ jobs:
         files: telegram-file-server-${{ matrix.os }}*
         tag_name: v${{ github.run_number }}-${{ matrix.os }}-${{ steps.date.outputs.date }}
         name: Telegram File Server ${{ matrix.os }} - ${{ steps.date.outputs.date }}
-        body: Portable binary for ${{ matrix.os }} architecture
+        body: Portable binary for ${{ matrix.os }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
