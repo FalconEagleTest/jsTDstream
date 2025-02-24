@@ -7,18 +7,22 @@ on:
         description: 'Version number (e.g., 1.0.0)'
         required: true
         default: '1.0.0'
-      platforms:
-        description: 'Platforms to build'
-        required: true
-        type: choice
-        options:
-          - all
-          - windows64
-          - android64
-          - android32
+      windows64:
+        description: 'Build Windows 64-bit'
+        type: boolean
+        default: false
+      android64:
+        description: 'Build Android ARM64'
+        type: boolean
+        default: false
+      android32:
+        description: 'Build Android ARM32'
+        type: boolean
+        default: false
       description:
         description: 'Release description'
         required: false
+        type: string
 
 permissions:
   contents: write
@@ -35,17 +39,17 @@ jobs:
           - target: win64
             os: windows64
             pkg_target: node16-win-x64
-            if: ${{ github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows64' }}
+            build: ${{ github.event.inputs.windows64 == 'true' }}
           - target: arm64
             os: android64
             pkg_target: node16-linux-arm64
-            if: ${{ github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'android64' }}
+            build: ${{ github.event.inputs.android64 == 'true' }}
           - target: arm
             os: android32
             pkg_target: node16-linux-armv7
-            if: ${{ github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'android32' }}
+            build: ${{ github.event.inputs.android32 == 'true' }}
 
-    if: ${{ fromJson(matrix.if) }}
+    if: matrix.build
 
     steps:
     - uses: actions/checkout@v4
