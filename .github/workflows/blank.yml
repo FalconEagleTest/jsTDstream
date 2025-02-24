@@ -37,30 +37,51 @@ jobs:
       with:
         node-version: 16
 
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        architecture: 'x64'
+
+    - name: Install build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          gcc-multilib \
+          g++-multilib \
+          pkg-config \
+          cmake
+
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
       with:
         ndk-version: r25c
         add-to-path: false
 
-    - name: Install build dependencies
+    - name: Configure build environment
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          python3 \
-          cmake
+        echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME}" >> $GITHUB_ENV
+        echo "PKG_CACHE_PATH=/tmp/pkg-cache" >> $GITHUB_ENV
+        echo "PKG_IGNORE_TAG=latest" >> $GITHUB_ENV
+        mkdir -p /tmp/pkg-cache
+        
+        # Configure node-gyp
+        npm config set python python3.10
+        npm config set node_gyp $(which node-gyp)
 
     - name: Install dependencies
       run: |
-        # Install nan first
-        npm install nan --no-save
-        
         # Install dependencies without running scripts
-        npm install --ignore-scripts
+        npm ci --ignore-scripts
         
-        # Install pkg
-        npm install --save-dev pkg
+        # Install pkg and its dependencies
+        npm install --save-dev pkg pkg-fetch
+
+    - name: Fetch Node.js binary
+      run: |
+        # Fetch the prebuilt Node.js binary for the target platform
+        npx pkg-fetch --node-version v16.20.2 --platform linux --arch ${{ matrix.target }}
 
     - name: Create pkg config
       run: |
@@ -76,24 +97,24 @@ jobs:
               'node_modules/**/*'
             ],
             targets: [ '${{ matrix.pkg_target }}' ],
-            scripts: []
+            outputPath: 'dist'
           };
-          
-          // Add nan to dependencies if not present
-          if (!pkg.dependencies) pkg.dependencies = {};
-          if (!pkg.dependencies.nan) pkg.dependencies.nan = '^2.17.0';
           
           fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
         "
 
     - name: Build Binary
       run: |
+        # Set pkg options
+        export PKG_CACHE_PATH=/tmp/pkg-cache
+        
+        # Build the binary
         npx pkg . \
           --target ${{ matrix.pkg_target }} \
           --output telegram-file-server-${{ matrix.os }} \
           --public \
           --no-bytecode \
-          --options max_old_space_size=4096
+          --options no-warnings
         
     - name: Create Release
       uses: softprops/action-gh-release@v2
