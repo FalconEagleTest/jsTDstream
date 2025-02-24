@@ -40,14 +40,7 @@ jobs:
       with:
         node-version: 16
 
-    - name: Setup Android NDK
-      if: contains(matrix.target, 'android')
-      uses: nttld/setup-ndk@v1
-      with:
-        ndk-version: r25c
-        local-cache: true
-
-    - name: Install build dependencies
+    - name: Install build tools
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -55,51 +48,48 @@ jobs:
           python3 \
           mingw-w64
 
-    - name: Install Node dependencies
+    - name: Setup project
       run: |
-        # Install all dependencies
+        # Install nan explicitly first
+        npm install nan
+        
+        # Install remaining dependencies
         npm install
         
-        # Install pkg locally
+        # Install pkg
         npm install --save-dev pkg
 
-    - name: Create pkg config
+    - name: Update package.json
       run: |
-        # Add pkg configuration to package.json
         node -e "
           const fs = require('fs');
           const pkg = require('./package.json');
-          pkg.bin = './src/index.js';
+          
+          // Add pkg configuration
+          pkg.bin = 'src/index.js';
           pkg.pkg = {
             assets: [
               'src/**/*',
               'config/**/*',
-              'node_modules/**/*',
-              'package.json'
+              'node_modules/**/*'
             ],
             targets: [ '${{ matrix.pkg_target }}' ]
           };
+          
+          // Ensure nan is in dependencies
+          if (!pkg.dependencies) pkg.dependencies = {};
+          if (!pkg.dependencies.nan) pkg.dependencies.nan = '^2.18.0';
+          
           fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
         "
 
-    - name: Build Windows Binary
-      if: contains(matrix.target, 'win')
+    - name: Build Binary
       run: |
-        npx pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
-      env:
-        CC: x86_64-w64-mingw32-gcc
-        CXX: x86_64-w64-mingw32-g++
-
-    - name: Build Android Binary
-      if: contains(matrix.target, 'android')
-      run: |
-        export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME}"
-        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-        
-        # Build the final binary
         npx pkg . \
           --target ${{ matrix.pkg_target }} \
-          --output telegram-file-server-${{ matrix.os }}
+          --output telegram-file-server-${{ matrix.os }} \
+          --public \
+          --compress GZip
         
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -115,9 +105,9 @@ jobs:
           ${{ inputs.description }}
           
           ### Notes
-          - Windows 64-bit build includes both command line and GUI support
-          - Android builds require root access to run
-          - All builds include dependencies for Telegram client
+          - Windows 64-bit build includes GUI support
+          - Android builds require root access
+          - All builds include required Telegram dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
