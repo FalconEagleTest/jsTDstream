@@ -47,33 +47,49 @@ jobs:
         ndk-version: r25c
         local-cache: true
 
-    - name: Setup pkg
+    - name: Install build dependencies
       run: |
-        npm install -g pkg
-        npm install -g node-gyp
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          python3 \
+          mingw-w64
+
+    - name: Install Node dependencies
+      run: |
+        # Add the required devDependencies to package.json
+        npm pkg set devDependencies.nan="^2.18.0"
+        npm pkg set devDependencies.node-gyp="^10.0.1"
+        npm pkg set devDependencies.pkg="^5.8.1"
         
-    - name: Install dependencies
-      run: |
-        npm ci
+        # Install all dependencies including the newly added ones
+        npm install
         
-    - name: Prepare pkg config
+        # Print installed versions for debugging
+        echo "Installed package versions:"
+        npm list nan node-gyp pkg
+
+    - name: Setup pkg assets
       run: |
-        echo '{
-          "pkg": {
-            "assets": [
-              "src/**/*",
-              "config/**/*",
-              "node_modules/**/*"
+        # Create a temporary package.json for pkg
+        node -e "
+          const pkg = require('./package.json');
+          pkg.pkg = {
+            assets: [
+              'src/**/*',
+              'config/**/*',
+              'node_modules/**/*'
             ],
-            "targets": [ "${{ matrix.pkg_target }}" ],
-            "outputPath": "dist"
-          }
-        }' > package.json
+            targets: [ '${{ matrix.pkg_target }}' ],
+            outputPath: 'dist'
+          };
+          require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+        "
 
     - name: Build Windows Binary
       if: contains(matrix.target, 'win')
       run: |
-        pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
+        npx pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
       env:
         CC: x86_64-w64-mingw32-gcc
         CXX: x86_64-w64-mingw32-g++
@@ -84,14 +100,14 @@ jobs:
         export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME}"
         export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
         
-        # Configure node-gyp for Android
-        node-gyp configure \
+        # Build using node-gyp
+        npx node-gyp rebuild \
           --target_platform=android \
           --target_arch=${{ contains(matrix.target, 'arm64') && 'arm64' || 'arm' }} \
           --target_api=21
         
-        # Build the project
-        pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
+        # Build the final binary
+        npx pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
         
     - name: Create Release
       uses: softprops/action-gh-release@v2
