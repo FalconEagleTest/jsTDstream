@@ -10,15 +10,15 @@ on:
       windows64:
         description: 'Build Windows 64-bit'
         type: boolean
-        default: false
+        default: true
       android64:
         description: 'Build Android ARM64'
         type: boolean
-        default: false
+        default: true
       android32:
         description: 'Build Android ARM32'
         type: boolean
-        default: false
+        default: true
       compression:
         description: 'Compression level'
         type: choice
@@ -26,7 +26,7 @@ on:
           - none
           - normal
           - max
-        default: 'normal'
+        default: 'max'
       target_system:
         description: 'Target system performance'
         type: choice
@@ -34,7 +34,7 @@ on:
           - low_end
           - normal
           - high_end
-        default: 'normal'
+        default: 'high_end'
       description:
         description: 'Release description'
         required: false
