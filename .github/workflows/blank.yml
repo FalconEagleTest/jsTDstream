@@ -1,4 +1,4 @@
-name: Build Portable Binaries
+name: Build Portable Binaries as Dynamic Libraries
 
 on:
   workflow_dispatch:
@@ -61,7 +61,7 @@ jobs:
   windows:
     needs: prepare-release
     if: ${{ github.event.inputs.windows64 == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
     
@@ -73,132 +73,285 @@ jobs:
     - name: Install dependencies
       run: |
         npm ci --ignore-scripts
-        npm install --save-dev pkg
+        npm install --save-dev node-gyp nan
 
-    - name: Install MinGW
+    - name: Create Node.js binding wrapper
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-mingw-w64 g++-mingw-w64
-
-    - name: Update package.json
-      run: |
-        # Set compression and memory options based on inputs
-        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
-        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
+        mkdir -p src/native
         
-        # Define memory limits based on target system
+        # Create C++ wrapper file for Node.js
+        echo '#include <node.h>
+        #include <node_api.h>
+        #include <v8.h>
+        #include <uv.h>
+        #include <string>
+        
+        using namespace v8;
+        
+        // Main entry function that will be called from Python or other languages
+        extern "C" __declspec(dllexport) int initialize_nodejs(const char* script_path, int argc, char** argv) {
+          // Initialize Node.js runtime with the provided arguments
+          node::Start(argc, argv);
+          return 0;
+        }
+        
+        // Function to execute JavaScript code
+        extern "C" __declspec(dllexport) int execute_js(const char* code, char* result, int result_size) {
+          Isolate* isolate = Isolate::GetCurrent();
+          HandleScope scope(isolate);
+          
+          Local<Context> context = Context::New(isolate);
+          Context::Scope context_scope(context);
+          
+          TryCatch try_catch(isolate);
+          
+          Local<String> source = String::NewFromUtf8(isolate, code).ToLocalChecked();
+          Local<Script> script = Script::Compile(context, source).ToLocalChecked();
+          
+          if (script.IsEmpty()) {
+            String::Utf8Value exception(isolate, try_catch.Exception());
+            snprintf(result, result_size, "Exception: %s", *exception);
+            return 1;
+          }
+          
+          Local<Value> result_value = script->Run(context).ToLocalChecked();
+          
+          if (result_value.IsEmpty()) {
+            String::Utf8Value exception(isolate, try_catch.Exception());
+            snprintf(result, result_size, "Exception: %s", *exception);
+            return 1;
+          }
+          
+          String::Utf8Value utf8_value(isolate, result_value);
+          snprintf(result, result_size, "%s", *utf8_value);
+          
+          return 0;
+        }
+        
+        // Cleanup function
+        extern "C" __declspec(dllexport) void cleanup_nodejs() {
+          node::Stop();
+        }' > src/native/node_wrapper.cpp
+        
+        # Create binding.gyp file
+        echo '{
+          "targets": [
+            {
+              "target_name": "node_wrapper",
+              "sources": [ "src/native/node_wrapper.cpp" ],
+              "include_dirs": [
+                "<!(node -e \"require(\'nan\')\")"
+              ],
+              "cflags!": [ "-fno-exceptions" ],
+              "cflags_cc!": [ "-fno-exceptions" ],
+              "conditions": [
+                ["OS==\"win\"", {
+                  "defines": [
+                    "WIN32_LEAN_AND_MEAN"
+                  ],
+                  "msvs_settings": {
+                    "VCCLCompilerTool": {
+                      "ExceptionHandling": 1
+                    }
+                  },
+                  "libraries": [ "node.lib" ]
+                }],
+                ["OS==\"linux\" or OS==\"android\"", {
+                  "cflags": [ "-fPIC" ],
+                  "ldflags": [ "-fPIC" ]
+                }]
+              ]
+            }
+          ]
+        }' > binding.gyp
+      shell: bash
+
+    - name: Build dynamic library
+      run: |
+        node-gyp configure
+        node-gyp build
+        
+        # Copy the built library
+        mkdir -p build/assets
+        cp build/Release/node_wrapper.node build/assets/node_wrapper.dll
+        
+        # Create Python wrapper for the library
+        echo '
+        import ctypes
+        import os
+        import sys
+        
+        class NodeJSWrapper:
+            def __init__(self, library_path):
+                self.lib = ctypes.CDLL(library_path)
+                self.lib.initialize_nodejs.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+                self.lib.initialize_nodejs.restype = ctypes.c_int
+                
+                self.lib.execute_js.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+                self.lib.execute_js.restype = ctypes.c_int
+                
+                self.lib.cleanup_nodejs.argtypes = []
+                self.lib.cleanup_nodejs.restype = None
+            
+            def initialize(self, script_path, args=None):
+                if args is None:
+                    args = []
+                    
+                # Convert arguments to C-compatible format
+                c_script_path = ctypes.c_char_p(script_path.encode("utf-8"))
+                c_args = (ctypes.c_char_p * (len(args) + 1))()
+                c_args[0] = script_path.encode("utf-8")
+                
+                for i, arg in enumerate(args):
+                    c_args[i+1] = arg.encode("utf-8")
+                
+                return self.lib.initialize_nodejs(c_script_path, len(args) + 1, c_args)
+            
+            def execute(self, js_code):
+                result_buffer = ctypes.create_string_buffer(4096)
+                status = self.lib.execute_js(js_code.encode("utf-8"), result_buffer, len(result_buffer))
+                return (status, result_buffer.value.decode("utf-8"))
+            
+            def cleanup(self):
+                self.lib.cleanup_nodejs()
+        
+        # Example usage
+        if __name__ == "__main__":
+            # Path to the compiled library (should be adjusted based on the environment)
+            lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_wrapper.dll")
+            
+            # Initialize the Node.js wrapper
+            node = NodeJSWrapper(lib_path)
+            
+            # Path to your main JavaScript file
+            js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "index.js")
+            
+            # Initialize Node.js with your script
+            node.initialize(js_path, ["--no-warnings"])
+            
+            # Execute some JavaScript code
+            status, result = node.execute("const os = require(\'os\'); os.platform();")
+            print(f"Platform: {result}")
+            
+            # Cleanup when done
+            node.cleanup()
+        ' > build/assets/node_wrapper.py
+        
+        # Package your JavaScript code
+        mkdir -p build/assets/src
+        cp -r src/* build/assets/src/
+        mkdir -p build/assets/config
+        cp -r config/* build/assets/config/ || echo "No config directory found"
+        mkdir -p build/assets/node_modules
+        
+        # Determine which modules to include based on target system
+        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
         case $SYSTEM_TYPE in
           "low_end")
-            MEM_LIMIT="512"
-            ASSETS_LEVEL="minimal"
+            # Minimal modules for low-end systems
+            cp -r node_modules/telegram build/assets/node_modules/
+            cp -r node_modules/express build/assets/node_modules/
+            cp -r node_modules/body-parser build/assets/node_modules/
             ;;
           "normal")
-            MEM_LIMIT="1024"
-            ASSETS_LEVEL="normal"
+            # Normal set of modules
+            cp -r node_modules build/assets/
+            find build/assets/node_modules -name "test" -type d -exec rm -rf {} + 2>/dev/null || true
+            find build/assets/node_modules -name "docs" -type d -exec rm -rf {} + 2>/dev/null || true
+            find build/assets/node_modules -name "example" -type d -exec rm -rf {} + 2>/dev/null || true
             ;;
           "high_end")
-            MEM_LIMIT="2048"
-            ASSETS_LEVEL="full"
+            # Full modules for high-end systems
+            cp -r node_modules build/assets/
             ;;
         esac
         
-        # Define compression based on input
+        # Create README with instructions
+        echo '# Telegram File Server - Dynamic Library Version
+
+        This package contains the Telegram File Server as a dynamically loadable library.
+        
+        ## Usage with Python
+        
+        ```python
+        import node_wrapper
+        
+        # Initialize the Node.js library
+        node = node_wrapper.NodeJSWrapper("node_wrapper.dll")
+        
+        # Start the Telegram File Server with the index.js script
+        node.initialize("src/index.js")
+        
+        # When done
+        node.cleanup()
+        ```
+        
+        ## Using in Kodi
+        
+        1. Copy this directory to a location accessible by Kodi
+        2. In your Kodi add-on Python code:
+        
+        ```python
+        import os
+        import sys
+        import ctypes
+        
+        # Add the path where the library is located
+        addon_path = xbmcaddon.Addon().getAddonInfo("path")
+        lib_path = os.path.join(addon_path, "resources", "lib")
+        sys.path.append(lib_path)
+        
+        # Import the wrapper
+        import node_wrapper
+        
+        # Initialize the Node.js server
+        node = node_wrapper.NodeJSWrapper(os.path.join(lib_path, "node_wrapper.dll"))
+        node.initialize(os.path.join(lib_path, "src", "index.js"))
+        
+        # The server is now running on the configured port
+        ```
+        ' > build/assets/README.md
+        
+        # Compress based on selected compression level
+        cd build/assets
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         case $COMPRESS_LEVEL in
           "none")
-            COMPRESS_OPT=""
+            zip -r ../../telegram-file-server-win64-dll.zip *
             ;;
           "normal")
-            COMPRESS_OPT="GZip"
+            zip -9r ../../telegram-file-server-win64-dll.zip *
             ;;
           "max")
-            COMPRESS_OPT="Brotli"
+            7z a -t7z -mx=9 ../../telegram-file-server-win64-dll.7z *
             ;;
         esac
-        
-        node -e "
-          const fs = require('fs');
-          const pkg = require('./package.json');
-          
-          // Set basic configuration
-          pkg.bin = 'src/index.js';
-          
-          // Define assets based on system type
-          const assetConfigs = {
-            minimal: {
-              assets: ['src/**/*', 'config/**/*'],
-              scripts: [
-                'node_modules/telegram/**/*.js',
-                'node_modules/express/**/*.js',
-                'node_modules/body-parser/**/*.js'
-              ]
-            },
-            normal: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*.js'],
-              scripts: []
-            },
-            full: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*'],
-              scripts: []
-            }
-          };
-          
-          pkg.pkg = {
-            ...assetConfigs['${ASSETS_LEVEL}'],
-            targets: ['node16-win-x64'],
-            compress: '${COMPRESS_OPT}',
-            options: {
-              'max-old-space-size': ${MEM_LIMIT}
-            },
-            ignore: [
-              ...(('${ASSETS_LEVEL}' !== 'full') ? [
-                'node_modules/**/*.md',
-                'node_modules/**/*.txt',
-                'node_modules/**/test/**',
-                'node_modules/**/docs/**',
-                'node_modules/**/*.d.ts',
-                'node_modules/**/LICENSE*',
-                'node_modules/**/example/**'
-              ] : [])
-            ]
-          };
-          
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-        "
+        cd ../..
+      shell: bash
 
-    - name: Build Binary
-      run: |
-        mkdir -p build/assets
-        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
-        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
-        
-        COMPRESS_FLAG=""
-        if [ "$COMPRESS_LEVEL" != "none" ]; then
-          COMPRESS_FLAG="--compress"
-        fi
-        
-        npx pkg . \
-          --target node16-win-x64 \
-          --output build/assets/telegram-file-server-windows64.exe \
-          --public \
-          --no-bytecode \
-          $COMPRESS_FLAG \
-          --no-native-build
-      env:
-        CC: x86_64-w64-mingw32-gcc
-        CXX: x86_64-w64-mingw32-g++
+    - name: Upload binaries
+      uses: actions/upload-artifact@v3
+      with:
+        name: windows-binaries
+        path: |
+          telegram-file-server-win64-dll.zip
+          telegram-file-server-win64-dll.7z
 
     - name: Release Windows
       uses: ncipollo/release-action@v1
       with:
-        artifacts: "build/assets/*"
+        artifacts: "telegram-file-server-win64-dll.*"
         allowUpdates: true
         token: ${{ secrets.GITHUB_TOKEN }}
         tag: ${{ needs.prepare-release.outputs.release_tag }}
         name: ${{ needs.prepare-release.outputs.release_name }}
         body: |
-          ## Windows 64-bit Binary
+          ## Windows 64-bit Dynamic Library
           Compression: ${{ inputs.compression }}
           System Target: ${{ inputs.target_system }}
+          
+          This release contains Node.js as a dynamic library (DLL) that can be loaded via ctypes.
+          See the included README.md for usage instructions.
           
           ${{ inputs.description }}
 
@@ -217,121 +370,557 @@ jobs:
     - name: Install dependencies
       run: |
         npm ci --ignore-scripts
-        npm install --save-dev pkg
-
-    - name: Update package.json
-      run: |
-        # Set compression and memory options based on inputs
-        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
-        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
+        npm install --save-dev node-gyp nan
         
-        # Define memory limits based on target system
+        # Install Android NDK
+        sudo apt-get update
+        sudo apt-get install -y ninja-build
+        mkdir -p android-ndk
+        wget -q https://dl.google.com/android/repository/android-ndk-r23c-linux.zip
+        unzip -q android-ndk-r23c-linux.zip -d android-ndk
+        export ANDROID_NDK_HOME=$(pwd)/android-ndk/android-ndk-r23c
+
+    - name: Create Node.js binding wrapper
+      run: |
+        mkdir -p src/native
+        
+        # Create C++ wrapper file for Node.js
+        echo '#include <node.h>
+        #include <node_api.h>
+        #include <v8.h>
+        #include <uv.h>
+        #include <string>
+        
+        using namespace v8;
+        
+        // Main entry function that will be called from Python or other languages
+        extern "C" __attribute__((visibility("default"))) int initialize_nodejs(const char* script_path, int argc, char** argv) {
+          // Initialize Node.js runtime with the provided arguments
+          node::Start(argc, argv);
+          return 0;
+        }
+        
+        // Function to execute JavaScript code
+        extern "C" __attribute__((visibility("default"))) int execute_js(const char* code, char* result, int result_size) {
+          Isolate* isolate = Isolate::GetCurrent();
+          HandleScope scope(isolate);
+          
+          Local<Context> context = Context::New(isolate);
+          Context::Scope context_scope(context);
+          
+          TryCatch try_catch(isolate);
+          
+          Local<String> source = String::NewFromUtf8(isolate, code).ToLocalChecked();
+          Local<Script> script = Script::Compile(context, source).ToLocalChecked();
+          
+          if (script.IsEmpty()) {
+            String::Utf8Value exception(isolate, try_catch.Exception());
+            snprintf(result, result_size, "Exception: %s", *exception);
+            return 1;
+          }
+          
+          Local<Value> result_value = script->Run(context).ToLocalChecked();
+          
+          if (result_value.IsEmpty()) {
+            String::Utf8Value exception(isolate, try_catch.Exception());
+            snprintf(result, result_size, "Exception: %s", *exception);
+            return 1;
+          }
+          
+          String::Utf8Value utf8_value(isolate, result_value);
+          snprintf(result, result_size, "%s", *utf8_value);
+          
+          return 0;
+        }
+        
+        // Cleanup function
+        extern "C" __attribute__((visibility("default"))) void cleanup_nodejs() {
+          node::Stop();
+        }' > src/native/node_wrapper.cpp
+        
+        # Create Android.mk file for Android compilation
+        mkdir -p jni
+        echo 'LOCAL_PATH := $(call my-dir)
+
+        include $(CLEAR_VARS)
+        LOCAL_MODULE := node_wrapper
+        LOCAL_SRC_FILES := ../src/native/node_wrapper.cpp
+        LOCAL_LDLIBS := -llog
+        LOCAL_CPPFLAGS := -fexceptions -frtti
+        LOCAL_SHARED_LIBRARIES := libnode
+        include $(BUILD_SHARED_LIBRARY)
+        
+        include $(CLEAR_VARS)
+        LOCAL_MODULE := libnode
+        LOCAL_SRC_FILES := $(NODE_MODULES_PATH)/libnode.so
+        include $(PREBUILT_SHARED_LIBRARY)' > jni/Android.mk
+        
+        # Create Application.mk file
+        echo 'APP_ABI := arm64-v8a
+        APP_PLATFORM := android-21
+        APP_STL := c++_shared
+        APP_OPTIM := release' > jni/Application.mk
+
+    - name: Download prebuilt Node.js libraries for Android ARM32
+      run: |
+        # Create directory for Android build
+        mkdir -p build/assets
+        mkdir -p android-libs
+        
+        # Download libnode for Android
+        wget -q https://github.com/JaneaSystems/nodejs-mobile/releases/download/nodejs-mobile-v0.3.2/nodejs-mobile-v0.3.2-android-arm64.tar.gz
+        tar -xzf nodejs-mobile-v0.3.2-android-arm64.tar.gz -C android-libs
+        
+        # Export the path for the Android.mk file
+        export NODE_MODULES_PATH=$(pwd)/android-libs/lib
+
+    - name: Build Android ARM32 shared library
+      run: |
+        # Build the library using NDK
+        ${ANDROID_NDK_HOME}/ndk-build -C $(pwd)
+        
+        # Copy the built libraries
+        mkdir -p build/assets/lib
+        cp -L libs/armeabi-v7a/libnode_wrapper.so build/assets/lib/
+        cp -L android-libs/lib/libnode.so build/assets/lib/
+        
+        # Create Python wrapper for the library
+        echo '
+        import ctypes
+        import os
+        import sys
+        
+        class NodeJSWrapper:
+            def __init__(self, library_path):
+                # On Android, we need to load dependencies first
+                self.lib_dir = os.path.dirname(library_path)
+                node_lib_path = os.path.join(self.lib_dir, "libnode.so")
+                
+                # Load Node.js library first
+                self.node_lib = ctypes.CDLL(node_lib_path)
+                
+                # Then load our wrapper
+                self.lib = ctypes.CDLL(library_path)
+                self.lib.initialize_nodejs.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+                self.lib.initialize_nodejs.restype = ctypes.c_int
+                
+                self.lib.execute_js.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+                self.lib.execute_js.restype = ctypes.c_int
+                
+                self.lib.cleanup_nodejs.argtypes = []
+                self.lib.cleanup_nodejs.restype = None
+            
+            def initialize(self, script_path, args=None):
+                if args is None:
+                    args = []
+                    
+                # Convert arguments to C-compatible format
+                c_script_path = ctypes.c_char_p(script_path.encode("utf-8"))
+                c_args = (ctypes.c_char_p * (len(args) + 1))()
+                c_args[0] = script_path.encode("utf-8")
+                
+                for i, arg in enumerate(args):
+                    c_args[i+1] = arg.encode("utf-8")
+                
+                return self.lib.initialize_nodejs(c_script_path, len(args) + 1, c_args)
+            
+            def execute(self, js_code):
+                result_buffer = ctypes.create_string_buffer(4096)
+                status = self.lib.execute_js(js_code.encode("utf-8"), result_buffer, len(result_buffer))
+                return (status, result_buffer.value.decode("utf-8"))
+            
+            def cleanup(self):
+                self.lib.cleanup_nodejs()
+        
+        # Example usage for Kodi
+        if __name__ == "__main__":
+            # Path to the compiled library (should be adjusted based on the environment)
+            lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "libnode_wrapper.so")
+            
+            # Initialize the Node.js wrapper
+            node = NodeJSWrapper(lib_path)
+            
+            # Path to your main JavaScript file
+            js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "index.js")
+            
+            # Initialize Node.js with your script
+            node.initialize(js_path, ["--no-warnings"])
+            
+            # The server is now running on the configured port
+            print("Telegram File Server running. Press Ctrl+C to exit.")
+            
+            try:
+                # Keep the script running
+                while True:
+                    import time
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                # Cleanup when done
+                node.cleanup()
+        ' > build/assets/node_wrapper.py
+        
+        # Package your JavaScript code
+        mkdir -p build/assets/src
+        cp -r src/* build/assets/src/
+        mkdir -p build/assets/config
+        cp -r config/* build/assets/config/ || echo "No config directory found"
+        mkdir -p build/assets/node_modules
+        
+        # Create Kodi add-on example
+        mkdir -p build/assets/kodi-example
+        echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <addon id="plugin.telegram.fileserver" name="Telegram File Server" version="1.0.0" provider-name="YourName">
+            <requires>
+                <import addon="xbmc.python" version="3.0.0"/>
+            </requires>
+            <extension point="xbmc.python.pluginsource" library="addon.py">
+                <provides>video</provides>
+            </extension>
+            <extension point="xbmc.addon.metadata">
+                <summary lang="en_GB">Telegram File Server</summary>
+                <description lang="en_GB">Stream files from Telegram</description>
+                <platform>all</platform>
+                <assets>
+                    <icon>resources/icon.png</icon>
+                </assets>
+            </extension>
+        </addon>' > build/assets/kodi-example/addon.xml
+        
+        echo '# -*- coding: utf-8 -*-
+        import os
+        import sys
+        import xbmc
+        import xbmcaddon
+        import xbmcgui
+        import xbmcplugin
+        import xbmcvfs
+        
+        # Add our library path
+        addon = xbmcaddon.Addon()
+        addon_path = addon.getAddonInfo("path")
+        lib_path = os.path.join(addon_path, "resources", "lib")
+        sys.path.append(lib_path)
+        
+        # Import the Node.js wrapper
+        import node_wrapper
+        
+        def start_server():
+            # Initialize the Node.js wrapper
+            wrapper_path = os.path.join(lib_path, "libnode_wrapper.so")
+            node = node_wrapper.NodeJSWrapper(wrapper_path)
+            
+            # Start the server with the index.js script
+            js_path = os.path.join(lib_path, "src", "index.js")
+            node.initialize(js_path, ["--no-warnings"])
+            
+            # Return the wrapper for later cleanup
+            return node
+        
+        # Plugin entry point
+        def run():
+            # Start the server
+            server = start_server()
+            
+            # Show a dialog
+            xbmcgui.Dialog().ok("Telegram File Server", 
+                                "Server started successfully on port 8000.",
+                                "Access it from your browser at http://YOUR_IP:8000")
+            
+            # Keep the add-on running until Kodi exits
+            monitor = xbmc.Monitor()
+            while not monitor.abortRequested():
+                if monitor.waitForAbort(1):
+                    break
+            
+            # Cleanup when Kodi exits
+            server.cleanup()
+        
+        if __name__ == "__main__":
+            run()' > build/assets/kodi-example/addon.py
+        
+        # Include installation instructions
+        echo '# Installing in Kodi
+        
+        1. Create a directory for your addon in Kodi\'s addon folder:
+           - Linux: ~/.kodi/addons/plugin.telegram.fileserver
+           - Android: /data/user/0/org.xbmc.kodi/cache/apk/addons/plugin.telegram.fileserver
+           
+        2. Copy all files from this package to the addon directory
+        
+        3. Ensure the shared libraries have the right permissions:
+           ```
+           chmod 755 resources/lib/libnode.so
+           chmod 755 resources/lib/libnode_wrapper.so
+           ```
+           
+        4. Install the addon from a zip file or by enabling it in Kodi
+        
+        ## Integration with Kodi\'s Virtual Filesystem
+        
+        The included example uses a simple web server. For better integration, you could:
+        
+        1. Create a VFS addon for Kodi
+        2. Use the Node.js wrapper to handle file operations
+        3. Implement Kodi\'s VFS interface
+        
+        This would allow direct browsing of Telegram files in Kodi\'s interface.
+        ' > build/assets/kodi-example/README.md
+        
+        # Determine which modules to include based on target system
+        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
         case $SYSTEM_TYPE in
           "low_end")
-            MEM_LIMIT="512"
-            ASSETS_LEVEL="minimal"
+            # Minimal modules for low-end systems
+            cp -r node_modules/telegram build/assets/node_modules/
+            cp -r node_modules/express build/assets/node_modules/
+            cp -r node_modules/body-parser build/assets/node_modules/
             ;;
           "normal")
-            MEM_LIMIT="1024"
-            ASSETS_LEVEL="normal"
+            # Normal set of modules
+            cp -r node_modules build/assets/
+            find build/assets/node_modules -name "test" -type d -exec rm -rf {} + 2>/dev/null || true
+            find build/assets/node_modules -name "docs" -type d -exec rm -rf {} + 2>/dev/null || true
+            find build/assets/node_modules -name "example" -type d -exec rm -rf {} + 2>/dev/null || true
             ;;
           "high_end")
-            MEM_LIMIT="2048"
-            ASSETS_LEVEL="full"
+            # Full modules for high-end systems
+            cp -r node_modules build/assets/
             ;;
         esac
         
-        # Define compression based on input
+        # Compress based on selected compression level
+        cd build/assets
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         case $COMPRESS_LEVEL in
           "none")
-            COMPRESS_OPT=""
+            tar -cf ../../telegram-file-server-android32-lib.tar *
             ;;
           "normal")
-            COMPRESS_OPT="GZip"
+            tar -czf ../../telegram-file-server-android32-lib.tar.gz *
             ;;
           "max")
-            COMPRESS_OPT="Brotli"
+            tar -cJf ../../telegram-file-server-android32-lib.tar.xz *
             ;;
         esac
-        
-        node -e "
-          const fs = require('fs');
-          const pkg = require('./package.json');
-          
-          pkg.bin = 'src/index.js';
-          
-          const assetConfigs = {
-            minimal: {
-              assets: ['src/**/*', 'config/**/*'],
-              scripts: [
-                'node_modules/telegram/**/*.js',
-                'node_modules/express/**/*.js',
-                'node_modules/body-parser/**/*.js'
-              ]
-            },
-            normal: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*.js'],
-              scripts: []
-            },
-            full: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*'],
-              scripts: []
-            }
-          };
-          
-          pkg.pkg = {
-            ...assetConfigs['${ASSETS_LEVEL}'],
-            targets: ['node16-linux-arm64'],
-            compress: '${COMPRESS_OPT}',
-            options: {
-              'max-old-space-size': ${MEM_LIMIT}
-            },
-            ignore: [
-              ...(('${ASSETS_LEVEL}' !== 'full') ? [
-                'node_modules/**/*.md',
-                'node_modules/**/*.txt',
-                'node_modules/**/test/**',
-                'node_modules/**/docs/**',
-                'node_modules/**/*.d.ts',
-                'node_modules/**/LICENSE*',
-                'node_modules/**/example/**'
-              ] : [])
-            ]
-          };
-          
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-        "
+        cd ../..
 
-    - name: Build Binary
-      run: |
-        mkdir -p build/assets
-        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
-        
-        COMPRESS_FLAG=""
-        if [ "$COMPRESS_LEVEL" != "none" ]; then
-          COMPRESS_FLAG="--compress"
-        fi
-        
-        npx pkg . \
-          --target node16-linux-arm64 \
-          --output build/assets/telegram-file-server-android64 \
-          --public \
-          --no-bytecode \
-          $COMPRESS_FLAG \
-          --no-native-build
+    - name: Upload binaries
+      uses: actions/upload-artifact@v3
+      with:
+        name: android-arm32-binaries
+        path: |
+          telegram-file-server-android32-lib.tar*
 
-    - name: Release Android ARM64
+    - name: Release Android ARM32
       uses: ncipollo/release-action@v1
       with:
-        artifacts: "build/assets/*"
+        artifacts: "telegram-file-server-android32-lib.tar*"
         allowUpdates: true
         token: ${{ secrets.GITHUB_TOKEN }}
         tag: ${{ needs.prepare-release.outputs.release_tag }}
         name: ${{ needs.prepare-release.outputs.release_name }}
         body: |
-          ## Android ARM64 Binary
+          ## Android ARM32 Dynamic Library
           Compression: ${{ inputs.compression }}
           System Target: ${{ inputs.target_system }}
+          
+          This release contains Node.js as a dynamic library (.so) for Android ARM32 that can be loaded via ctypes.
+          Includes a Kodi example integration for direct use in Kodi add-ons.
+          
+          ${{ inputs.description }}
+
+    - name: Build Android ARM64 shared library
+      run: |
+        # Build the library using NDK
+        ${ANDROID_NDK_HOME}/ndk-build -C $(pwd)
+        
+        # Copy the built libraries
+        mkdir -p build/assets/lib
+        cp -L libs/arm64-v8a/libnode_wrapper.so build/assets/lib/
+        cp -L android-libs/lib/libnode.so build/assets/lib/
+        
+        # Create Python wrapper for the library
+        echo '
+        import ctypes
+        import os
+        import sys
+        
+        class NodeJSWrapper:
+            def __init__(self, library_path):
+                # On Android, we need to load dependencies first
+                self.lib_dir = os.path.dirname(library_path)
+                node_lib_path = os.path.join(self.lib_dir, "libnode.so")
+                
+                # Load Node.js library first
+                self.node_lib = ctypes.CDLL(node_lib_path)
+                
+                # Then load our wrapper
+                self.lib = ctypes.CDLL(library_path)
+                self.lib.initialize_nodejs.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+                self.lib.initialize_nodejs.restype = ctypes.c_int
+                
+                self.lib.execute_js.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+                self.lib.execute_js.restype = ctypes.c_int
+                
+                self.lib.cleanup_nodejs.argtypes = []
+                self.lib.cleanup_nodejs.restype = None
+            
+            def initialize(self, script_path, args=None):
+                if args is None:
+                    args = []
+                    
+                # Convert arguments to C-compatible format
+                c_script_path = ctypes.c_char_p(script_path.encode("utf-8"))
+                c_args = (ctypes.c_char_p * (len(args) + 1))()
+                c_args[0] = script_path.encode("utf-8")
+                
+                for i, arg in enumerate(args):
+                    c_args[i+1] = arg.encode("utf-8")
+                
+                return self.lib.initialize_nodejs(c_script_path, len(args) + 1, c_args)
+            
+            def execute(self, js_code):
+                result_buffer = ctypes.create_string_buffer(4096)
+                status = self.lib.execute_js(js_code.encode("utf-8"), result_buffer, len(result_buffer))
+                return (status, result_buffer.value.decode("utf-8"))
+            
+            def cleanup(self):
+                self.lib.cleanup_nodejs()
+        
+        # Example usage
+        if __name__ == "__main__":
+            # Path to the compiled library (should be adjusted based on the environment)
+            lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "libnode_wrapper.so")
+            
+            # Initialize the Node.js wrapper
+            node = NodeJSWrapper(lib_path)
+            
+            # Path to your main JavaScript file
+            js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "index.js")
+            
+            # Initialize Node.js with your script
+            node.initialize(js_path, ["--no-warnings"])
+            
+            # Execute some JavaScript code
+            status, result = node.execute("const os = require(\'os\'); os.platform();")
+            print(f"Platform: {result}")
+            
+            # Cleanup when done
+            node.cleanup()
+        ' > build/assets/node_wrapper.py
+        
+        # Package your JavaScript code
+        mkdir -p build/assets/src
+        cp -r src/* build/assets/src/
+        mkdir -p build/assets/config
+        cp -r config/* build/assets/config/ || echo "No config directory found"
+        mkdir -p build/assets/node_modules
+        
+        # Determine which modules to include based on target system
+        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
+        case $SYSTEM_TYPE in
+          "low_end")
+            # Minimal modules for low-end systems
+            cp -r node_modules/telegram build/assets/node_modules/
+            cp -r node_modules/express build/assets/node_modules/
+            cp -r node_modules/body-parser build/assets/node_modules/
+            ;;
+          "normal")
+            # Normal set of modules
+            cp -r node_modules build/assets/
+            find build/assets/node_modules -name "test" -type d -exec rm -rf {} + 2>/dev/null || true
+            find build/assets/node_modules -name "docs" -type d -exec rm -rf {} + 2>/dev/null || true
+            find build/assets/node_modules -name "example" -type d -exec rm -rf {} + 2>/dev/null || true
+            ;;
+          "high_end")
+            # Full modules for high-end systems
+            cp -r node_modules build/assets/
+            ;;
+        esac
+        
+        # Create README with instructions for Android
+        echo '# Telegram File Server - Android Dynamic Library Version
+
+        This package contains the Telegram File Server as a dynamically loadable library for Android.
+        
+        ## Usage with Python in Kodi
+        
+        ```python
+        import os
+        import sys
+        import xbmc
+        import xbmcaddon
+        
+        # Add the path where the library is located
+        addon_path = xbmcaddon.Addon().getAddonInfo("path")
+        lib_path = os.path.join(addon_path, "resources", "lib")
+        sys.path.append(lib_path)
+        
+        # Import the wrapper
+        from node_wrapper import NodeJSWrapper
+        
+        # Initialize the Node.js server
+        node_lib_path = os.path.join(lib_path, "libnode_wrapper.so")
+        node = NodeJSWrapper(node_lib_path)
+        
+        # Start the server with your index.js file
+        js_path = os.path.join(lib_path, "src", "index.js")
+        node.initialize(js_path)
+        
+        # The server is now running on the configured port
+        xbmc.log("Telegram File Server running on port 8000", xbmc.LOGINFO)
+        
+        # When your add-on stops
+        def on_shutdown():
+            node.cleanup()
+        ```
+        
+        ## Loading in an Android app
+        
+        ```java
+        System.loadLibrary("node");
+        System.loadLibrary("node_wrapper");
+        ```
+        ' > build/assets/README.md
+        
+        # Compress based on selected compression level
+        cd build/assets
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
+        case $COMPRESS_LEVEL in
+          "none")
+            tar -cf ../../telegram-file-server-android64-lib.tar *
+            ;;
+          "normal")
+            tar -czf ../../telegram-file-server-android64-lib.tar.gz *
+            ;;
+          "max")
+            tar -cJf ../../telegram-file-server-android64-lib.tar.xz *
+            ;;
+        esac
+        cd ../..
+
+    - name: Upload binaries
+      uses: actions/upload-artifact@v3
+      with:
+        name: android-arm64-binaries
+        path: |
+          telegram-file-server-android64-lib.tar*
+
+    - name: Release Android ARM64
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: "telegram-file-server-android64-lib.tar*"
+        allowUpdates: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: ${{ needs.prepare-release.outputs.release_tag }}
+        name: ${{ needs.prepare-release.outputs.release_name }}
+        body: |
+          ## Android ARM64 Dynamic Library
+          Compression: ${{ inputs.compression }}
+          System Target: ${{ inputs.target_system }}
+          
+          This release contains Node.js as a dynamic library (.so) for Android ARM64 that can be loaded via ctypes.
+          See the included README.md for usage instructions.
           
           ${{ inputs.description }}
 
@@ -341,7 +930,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-
+    
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
@@ -350,91 +939,106 @@ jobs:
     - name: Install dependencies
       run: |
         npm ci --ignore-scripts
-        npm install --save-dev pkg
+        npm install --save-dev node-gyp nan
+        
+        # Install Android NDK
+        sudo apt-get update
+        sudo apt-get install -y ninja-build
+        mkdir -p android-ndk
+        wget -q https://dl.google.com/android/repository/android-ndk-r23c-linux.zip
+        unzip -q android-ndk-r23c-linux.zip -d android-ndk
+        export ANDROID_NDK_HOME=$(pwd)/android-ndk/android-ndk-r23c
 
-    - name: Build Binary
+    - name: Create Node.js binding wrapper
       run: |
-        NODE_VERSION="v16.20.2"
-        mkdir -p build/assets
+        mkdir -p src/native
         
-        # Download ARM32 binary
-        wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-armv7l.tar.gz || \
-        wget -q https://nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-armv7l.tar.gz
+        # Create C++ wrapper file for Node.js
+        echo '#include <node.h>
+        #include <node_api.h>
+        #include <v8.h>
+        #include <uv.h>
+        #include <string>
         
-        tar -xzf node-${NODE_VERSION}-linux-armv7l.tar.gz
+        using namespace v8;
         
-        # Determine which files to include based on target system
-        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
-        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
+        // Main entry function that will be called from Python or other languages
+        extern "C" __attribute__((visibility("default"))) int initialize_nodejs(const char* script_path, int argc, char** argv) {
+          // Initialize Node.js runtime with the provided arguments
+          node::Start(argc, argv);
+          return 0;
+        }
         
-        mkdir -p package
-        
-        case $SYSTEM_TYPE in
-          "low_end")
-            # Minimal files for low-end systems
-            mkdir -p package/src package/node_modules
-            cp -r src/index.js package/src/
-            cp -r node_modules/{telegram,express,body-parser} package/node_modules/
-            ;;
-          "normal")
-            # Normal set of files
-            cp -r src package/
-            cp -r node_modules package/
-            rm -rf package/node_modules/**/test
-            rm -rf package/node_modules/**/docs
-            ;;
-          "high_end")
-            # Full set of files
-            cp -r src package/
-            cp -r node_modules package/
-            ;;
-        esac
-        
-        cp package.json package/
-        
-        # Copy Node.js binary
-        cp node-${NODE_VERSION}-linux-armv7l/bin/node package/telegram-file-server-android32
-        chmod +x package/telegram-file-server-android32
-        
-        # Create startup script
-        cat > package/start.sh << 'EOL'
-        #!/bin/sh
-        DIR=$(dirname "$0")
-        export NODE_PATH=$DIR/node_modules
-        exec $DIR/telegram-file-server-android32 $DIR/src/index.js "$@"
-        EOL
-        
-        chmod +x package/start.sh
-        
-        # Create archive with optional compression
-        cd package
-        case $COMPRESS_LEVEL in
-          "none")
-            tar -cf ../build/assets/telegram-file-server-android32.tar *
-            ;;
-          "normal")
-            tar -czf ../build/assets/telegram-file-server-android32.tar.gz *
-            ;;
-          "max")
-            tar -cJf ../build/assets/telegram-file-server-android32.tar.xz *
-            ;;
-        esac
-        cd ..
-        
-        # Move binary out for separate upload
-        mv package/telegram-file-server-android32 build/assets/
-
-    - name: Release Android ARM32
-      uses: ncipollo/release-action@v1
-      with:
-        artifacts: "build/assets/*"
-        allowUpdates: true
-        token: ${{ secrets.GITHUB_TOKEN }}
-        tag: ${{ needs.prepare-release.outputs.release_tag }}
-        name: ${{ needs.prepare-release.outputs.release_name }}
-        body: |
-          ## Android ARM32 Binary
-          Compression: ${{ inputs.compression }}
-          System Target: ${{ inputs.target_system }}
+        // Function to execute JavaScript code
+        extern "C" __attribute__((visibility("default"))) int execute_js(const char* code, char* result, int result_size) {
+          Isolate* isolate = Isolate::GetCurrent();
+          HandleScope scope(isolate);
           
-          ${{ inputs.description }}
+          Local<Context> context = Context::New(isolate);
+          Context::Scope context_scope(context);
+          
+          TryCatch try_catch(isolate);
+          
+          Local<String> source = String::NewFromUtf8(isolate, code).ToLocalChecked();
+          Local<Script> script = Script::Compile(context, source).ToLocalChecked();
+          
+          if (script.IsEmpty()) {
+            String::Utf8Value exception(isolate, try_catch.Exception());
+            snprintf(result, result_size, "Exception: %s", *exception);
+            return 1;
+          }
+          
+          Local<Value> result_value = script->Run(context).ToLocalChecked();
+          
+          if (result_value.IsEmpty()) {
+            String::Utf8Value exception(isolate, try_catch.Exception());
+            snprintf(result, result_size, "Exception: %s", *exception);
+            return 1;
+          }
+          
+          String::Utf8Value utf8_value(isolate, result_value);
+          snprintf(result, result_size, "%s", *utf8_value);
+          
+          return 0;
+        }
+        
+        // Cleanup function
+        extern "C" __attribute__((visibility("default"))) void cleanup_nodejs() {
+          node::Stop();
+        }' > src/native/node_wrapper.cpp
+        
+        # Create Android.mk file for Android compilation
+        mkdir -p jni
+        echo 'LOCAL_PATH := $(call my-dir)
+
+        include $(CLEAR_VARS)
+        LOCAL_MODULE := node_wrapper
+        LOCAL_SRC_FILES := ../src/native/node_wrapper.cpp
+        LOCAL_LDLIBS := -llog
+        LOCAL_CPPFLAGS := -fexceptions -frtti
+        LOCAL_SHARED_LIBRARIES := libnode
+        include $(BUILD_SHARED_LIBRARY)
+        
+        include $(CLEAR_VARS)
+        LOCAL_MODULE := libnode
+        LOCAL_SRC_FILES := $(NODE_MODULES_PATH)/libnode.so
+        include $(PREBUILT_SHARED_LIBRARY)' > jni/Android.mk
+        
+        # Create Application.mk file
+        echo 'APP_ABI := armeabi-v7a
+        APP_PLATFORM := android-21
+        APP_STL := c++_shared
+        APP_OPTIM := release' > jni/Application.mk
+
+    - name: Download prebuilt Node.js libraries for Android
+      run: |
+        # Create directory for Android build
+        mkdir -p build/assets
+        mkdir -p android-libs
+        
+        # Download libnode for Android
+        wget -q https://github.com/JaneaSystems/nodejs-mobile/releases/download/nodejs-mobile-v0.3.2/nodejs-mobile-v0.3.2-android-arm.tar.gz
+        tar -xzf nodejs-mobile-v0.3.2-android-arm.tar.gz -C android-libs
+        
+        # Export the path for the Android.mk file
+        export NODE_MODULES_PATH=$(pwd)/android-libs/lib
