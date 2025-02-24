@@ -1,9 +1,15 @@
 name: Build Portable Binaries
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0)'
+        required: true
+        default: '1.0.0'
+      description:
+        description: 'Release description'
+        required: false
 
 jobs:
   build:
@@ -14,12 +20,13 @@ jobs:
         include:
           - target: win-x64
             os: windows64
-          - target: win-x86
-            os: windows32
+            pkg_target: node16-win-x64
           - target: android-arm64
             os: android64
+            pkg_target: node16-android-arm64
           - target: android-arm
             os: android32
+            pkg_target: node16-android-arm
 
     steps:
     - uses: actions/checkout@v4
@@ -32,39 +39,77 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: 16
-    
-    - name: Install build dependencies
+
+    - name: Setup Android NDK
+      if: contains(matrix.target, 'android')
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+        local-cache: true
+
+    - name: Setup pkg
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          gcc-arm-linux-gnueabihf \
-          gcc-aarch64-linux-gnu \
-          g++-arm-linux-gnueabihf \
-          g++-aarch64-linux-gnu \
-          crossbuild-essential-arm64 \
-          crossbuild-essential-armhf \
-          python3
-    
+        npm install -g pkg
+        npm install -g node-gyp
+        
     - name: Install dependencies
       run: |
         npm ci
-        npm install -g nexe
-    
-    - name: Build binary
+        
+    - name: Prepare pkg config
       run: |
-        CFLAGS="-fPIC" CXXFLAGS="-fPIC" nexe src/index.js -o telegram-file-server-${{ matrix.os }} --target ${{ matrix.target }} --build
+        echo '{
+          "pkg": {
+            "assets": [
+              "src/**/*",
+              "config/**/*",
+              "node_modules/**/*"
+            ],
+            "targets": [ "${{ matrix.pkg_target }}" ],
+            "outputPath": "dist"
+          }
+        }' > package.json
+
+    - name: Build Windows Binary
+      if: contains(matrix.target, 'win')
+      run: |
+        pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
       env:
-        CC: gcc
-        CXX: g++
-    
+        CC: x86_64-w64-mingw32-gcc
+        CXX: x86_64-w64-mingw32-g++
+
+    - name: Build Android Binary
+      if: contains(matrix.target, 'android')
+      run: |
+        export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME}"
+        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+        
+        # Configure node-gyp for Android
+        node-gyp configure \
+          --target_platform=android \
+          --target_arch=${{ contains(matrix.target, 'arm64') && 'arm64' || 'arm' }} \
+          --target_api=21
+        
+        # Build the project
+        pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
+        
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
         files: telegram-file-server-${{ matrix.os }}*
-        tag_name: v${{ github.run_number }}-${{ matrix.os }}-${{ steps.date.outputs.date }}
-        name: Telegram File Server ${{ matrix.os }} - ${{ steps.date.outputs.date }}
-        body: Portable binary for ${{ matrix.os }}
+        tag_name: v${{ inputs.version }}-${{ matrix.os }}-${{ steps.date.outputs.date }}
+        name: Telegram File Server ${{ matrix.os }} v${{ inputs.version }}
+        body: |
+          Version: ${{ inputs.version }}
+          Platform: ${{ matrix.os }}
+          Build Date: ${{ steps.date.outputs.date }}
+          
+          ${{ inputs.description }}
+          
+          ### Notes
+          - Windows 64-bit build includes both command line and GUI support
+          - Android builds require root access to run
+          - All builds include native dependencies for Telegram client
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
