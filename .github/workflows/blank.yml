@@ -19,6 +19,22 @@ on:
         description: 'Build Android ARM32'
         type: boolean
         default: false
+      compression:
+        description: 'Compression level'
+        type: choice
+        options:
+          - none
+          - normal
+          - max
+        default: 'normal'
+      target_system:
+        description: 'Target system performance'
+        type: choice
+        options:
+          - low_end
+          - normal
+          - high_end
+        default: 'normal'
       description:
         description: 'Release description'
         required: false
@@ -56,29 +72,107 @@ jobs:
 
     - name: Update package.json
       run: |
-        node -e '
-          const fs = require("fs");
-          const pkg = require("./package.json");
-          pkg.bin = "src/index.js";
-          pkg.pkg = {
-            assets: [
-              "src/**/*",
-              "node_modules/**/*",
-              "config/**/*"
-            ],
-            targets: ["node16-win-x64"]
+        # Set compression and memory options based on inputs
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
+        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
+        
+        # Define memory limits based on target system
+        case $SYSTEM_TYPE in
+          "low_end")
+            MEM_LIMIT="512"
+            ASSETS_LEVEL="minimal"
+            ;;
+          "normal")
+            MEM_LIMIT="1024"
+            ASSETS_LEVEL="normal"
+            ;;
+          "high_end")
+            MEM_LIMIT="2048"
+            ASSETS_LEVEL="full"
+            ;;
+        esac
+        
+        # Define compression based on input
+        case $COMPRESS_LEVEL in
+          "none")
+            COMPRESS_OPT=""
+            ;;
+          "normal")
+            COMPRESS_OPT="GZip"
+            ;;
+          "max")
+            COMPRESS_OPT="Brotli"
+            ;;
+        esac
+        
+        node -e "
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          
+          // Set basic configuration
+          pkg.bin = 'src/index.js';
+          
+          // Define assets based on system type
+          const assetConfigs = {
+            minimal: {
+              assets: ['src/**/*', 'config/**/*'],
+              scripts: [
+                'node_modules/telegram/**/*.js',
+                'node_modules/express/**/*.js',
+                'node_modules/body-parser/**/*.js'
+              ]
+            },
+            normal: {
+              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*.js'],
+              scripts: []
+            },
+            full: {
+              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*'],
+              scripts: []
+            }
           };
-          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
-        '
+          
+          pkg.pkg = {
+            ...assetConfigs['${ASSETS_LEVEL}'],
+            targets: ['node16-win-x64'],
+            compress: '${COMPRESS_OPT}',
+            options: {
+              'max-old-space-size': ${MEM_LIMIT}
+            },
+            ignore: [
+              ...(('${ASSETS_LEVEL}' !== 'full') ? [
+                'node_modules/**/*.md',
+                'node_modules/**/*.txt',
+                'node_modules/**/test/**',
+                'node_modules/**/docs/**',
+                'node_modules/**/*.d.ts',
+                'node_modules/**/LICENSE*',
+                'node_modules/**/example/**'
+              ] : [])
+            ]
+          };
+          
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+        "
 
     - name: Build Binary
       run: |
         mkdir -p build
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
+        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
+        
+        COMPRESS_FLAG=""
+        if [ "$COMPRESS_LEVEL" != "none" ]; then
+          COMPRESS_FLAG="--compress"
+        fi
+        
         npx pkg . \
           --target node16-win-x64 \
           --output build/telegram-file-server-windows64.exe \
           --public \
-          --no-bytecode
+          --no-bytecode \
+          $COMPRESS_FLAG \
+          --no-native-build
       env:
         CC: x86_64-w64-mingw32-gcc
         CXX: x86_64-w64-mingw32-g++
@@ -93,11 +187,14 @@ jobs:
           Version: ${{ inputs.version }}
           Platform: Windows 64-bit
           Build Date: ${{ steps.date.outputs.date }}
+          Compression: ${{ inputs.compression }}
+          System Target: ${{ inputs.target_system }}
           
           ${{ inputs.description }}
           
           ### Notes
           - Windows 64-bit executable
+          - Optimized for ${{ inputs.target_system }} systems
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -123,29 +220,104 @@ jobs:
 
     - name: Update package.json
       run: |
-        node -e '
-          const fs = require("fs");
-          const pkg = require("./package.json");
-          pkg.bin = "src/index.js";
-          pkg.pkg = {
-            assets: [
-              "src/**/*",
-              "node_modules/**/*",
-              "config/**/*"
-            ],
-            targets: ["node16-linux-arm64"]
+        # Set compression and memory options based on inputs
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
+        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
+        
+        # Define memory limits based on target system
+        case $SYSTEM_TYPE in
+          "low_end")
+            MEM_LIMIT="512"
+            ASSETS_LEVEL="minimal"
+            ;;
+          "normal")
+            MEM_LIMIT="1024"
+            ASSETS_LEVEL="normal"
+            ;;
+          "high_end")
+            MEM_LIMIT="2048"
+            ASSETS_LEVEL="full"
+            ;;
+        esac
+        
+        # Define compression based on input
+        case $COMPRESS_LEVEL in
+          "none")
+            COMPRESS_OPT=""
+            ;;
+          "normal")
+            COMPRESS_OPT="GZip"
+            ;;
+          "max")
+            COMPRESS_OPT="Brotli"
+            ;;
+        esac
+        
+        node -e "
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          
+          pkg.bin = 'src/index.js';
+          
+          const assetConfigs = {
+            minimal: {
+              assets: ['src/**/*', 'config/**/*'],
+              scripts: [
+                'node_modules/telegram/**/*.js',
+                'node_modules/express/**/*.js',
+                'node_modules/body-parser/**/*.js'
+              ]
+            },
+            normal: {
+              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*.js'],
+              scripts: []
+            },
+            full: {
+              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*'],
+              scripts: []
+            }
           };
-          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
-        '
+          
+          pkg.pkg = {
+            ...assetConfigs['${ASSETS_LEVEL}'],
+            targets: ['node16-linux-arm64'],
+            compress: '${COMPRESS_OPT}',
+            options: {
+              'max-old-space-size': ${MEM_LIMIT}
+            },
+            ignore: [
+              ...(('${ASSETS_LEVEL}' !== 'full') ? [
+                'node_modules/**/*.md',
+                'node_modules/**/*.txt',
+                'node_modules/**/test/**',
+                'node_modules/**/docs/**',
+                'node_modules/**/*.d.ts',
+                'node_modules/**/LICENSE*',
+                'node_modules/**/example/**'
+              ] : [])
+            ]
+          };
+          
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+        "
 
     - name: Build Binary
       run: |
         mkdir -p build
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
+        
+        COMPRESS_FLAG=""
+        if [ "$COMPRESS_LEVEL" != "none" ]; then
+          COMPRESS_FLAG="--compress"
+        fi
+        
         npx pkg . \
           --target node16-linux-arm64 \
           --output build/telegram-file-server-android64 \
           --public \
-          --no-bytecode
+          --no-bytecode \
+          $COMPRESS_FLAG \
+          --no-native-build
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -157,12 +329,15 @@ jobs:
           Version: ${{ inputs.version }}
           Platform: Android ARM64
           Build Date: ${{ steps.date.outputs.date }}
+          Compression: ${{ inputs.compression }}
+          System Target: ${{ inputs.target_system }}
           
           ${{ inputs.description }}
           
           ### Notes
           - Linux ARM64 binary for Android use
           - Requires root access
+          - Optimized for ${{ inputs.target_system }} systems
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -197,51 +372,91 @@ jobs:
         
         tar -xzf node-${NODE_VERSION}-linux-armv7l.tar.gz
         
-        # Create directory structure
-        cp -r src build/
-        cp -r node_modules build/
-        cp package.json build/
+        # Determine which files to include based on target system
+        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
+        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
+        
+        mkdir -p package
+        
+        case $SYSTEM_TYPE in
+          "low_end")
+            # Minimal files for low-end systems
+            mkdir -p package/src package/node_modules
+            cp -r src/index.js package/src/
+            cp -r node_modules/{telegram,express,body-parser} package/node_modules/
+            ;;
+          "normal")
+            # Normal set of files
+            cp -r src package/
+            cp -r node_modules package/
+            rm -rf package/node_modules/**/test
+            rm -rf package/node_modules/**/docs
+            ;;
+          "high_end")
+            # Full set of files
+            cp -r src package/
+            cp -r node_modules package/
+            ;;
+        esac
+        
+        cp package.json package/
         
         # Copy Node.js binary
-        cp node-${NODE_VERSION}-linux-armv7l/bin/node build/telegram-file-server-android32
-        chmod +x build/telegram-file-server-android32
+        cp node-${NODE_VERSION}-linux-armv7l/bin/node package/telegram-file-server-android32
+        chmod +x package/telegram-file-server-android32
         
         # Create startup script
-        cat > build/start.sh << 'EOL'
+        cat > package/start.sh << 'EOL'
         #!/bin/sh
         DIR=$(dirname "$0")
         export NODE_PATH=$DIR/node_modules
         exec $DIR/telegram-file-server-android32 $DIR/src/index.js "$@"
         EOL
         
-        chmod +x build/start.sh
+        chmod +x package/start.sh
         
-        # Create archive
-        cd build
-        tar -czf telegram-file-server-android32.tar.gz *
+        # Create archive with optional compression
+        cd package
+        case $COMPRESS_LEVEL in
+          "none")
+            tar -cf ../build/telegram-file-server-android32.tar *
+            ;;
+          "normal")
+            tar -czf ../build/telegram-file-server-android32.tar.gz *
+            ;;
+          "max")
+            tar -cJf ../build/telegram-file-server-android32.tar.xz *
+            ;;
+        esac
         cd ..
+        
+        # Move binary out for separate upload
+        mv package/telegram-file-server-android32 build/
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
           build/telegram-file-server-android32
-          build/telegram-file-server-android32.tar.gz
+          build/telegram-file-server-android32.tar*
         tag_name: v${{ inputs.version }}-android32-${{ steps.date.outputs.date }}
         name: Telegram File Server Android32 v${{ inputs.version }}
         body: |
           Version: ${{ inputs.version }}
           Platform: Android ARM32
           Build Date: ${{ steps.date.outputs.date }}
+          Compression: ${{ inputs.compression }}
+          System Target: ${{ inputs.target_system }}
           
           ${{ inputs.description }}
           
           ### Notes
           - Linux ARM32 binary for Android use
           - Requires root access
+          - Optimized for ${{ inputs.target_system }} systems
           
           ### Installation
-          1. Extract the tar.gz file
+          1. Extract the archive file
           2. Run ./start.sh
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
