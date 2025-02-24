@@ -20,16 +20,17 @@ jobs:
     runs-on: ubuntu-latest
     
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: arm64
             os: android64
-            arch: arm64
+            pkg_target: node16-linux-arm64
             node_arch: arm64
           - target: arm
             os: android32
-            arch: armv7l
-            node_arch: arm
+            pkg_target: node16-linux-armv7
+            node_arch: armv7l
 
     steps:
     - uses: actions/checkout@v4
@@ -43,71 +44,111 @@ jobs:
       with:
         node-version: 16
 
-    - name: Download Node.js binary
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        architecture: 'x64'
+
+    - name: Install build tools
       run: |
-        mkdir -p dist
-        
-        # Download the pre-built binary
-        NODE_VERSION="v16.20.2"
-        ARCH="${{ matrix.node_arch }}"
-        
-        wget -q https://nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-${ARCH}.tar.gz
-        tar -xzf node-${NODE_VERSION}-linux-${ARCH}.tar.gz
-        mv node-${NODE_VERSION}-linux-${ARCH}/bin/node dist/telegram-file-server-${{ matrix.os }}
-        chmod +x dist/telegram-file-server-${{ matrix.os }}
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          gcc-multilib \
+          g++-multilib \
+          pkg-config \
+          cmake
+
+    - name: Configure build environment
+      run: |
+        echo "PKG_CACHE_PATH=/tmp/pkg-cache" >> $GITHUB_ENV
+        mkdir -p /tmp/pkg-cache
 
     - name: Install dependencies
       run: |
-        npm ci
+        npm ci --ignore-scripts
+        npm install --save-dev pkg
 
-    - name: Package application
+    - name: Create pkg config
       run: |
-        # Create a temporary directory for packaging
-        mkdir -p build/app
-        
-        # Copy application files
-        cp -r src/* build/app/
-        cp -r node_modules build/app/
-        cp package.json build/app/
-        
-        # Create startup script
-        cat > build/app/start.sh << 'EOL'
-        #!/bin/sh
-        DIR=$(dirname "$0")
-        export NODE_PATH=$DIR/node_modules
-        exec $DIR/../telegram-file-server-${{ matrix.os }} $DIR/index.js "$@"
-        EOL
-        
-        chmod +x build/app/start.sh
-        
-        # Archive everything
-        cd build
-        tar -czf ../dist/telegram-file-server-${{ matrix.os }}.tar.gz app/* telegram-file-server-${{ matrix.os }}
-        cd ..
+        node -e "
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          
+          pkg.bin = 'src/index.js';
+          pkg.pkg = {
+            assets: [
+              'src/**/*',
+              'config/**/*',
+              'node_modules/**/*'
+            ],
+            targets: [ '${{ matrix.pkg_target }}' ],
+            outputPath: 'dist'
+          };
+          
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+        "
 
+    - name: Build Binary
+      run: |
+        if [ "${{ matrix.target }}" = "arm64" ]; then
+          # For ARM64, use pkg directly as it worked before
+          npx pkg . \
+            --target ${{ matrix.pkg_target }} \
+            --output telegram-file-server-${{ matrix.os }} \
+            --public \
+            --no-bytecode
+        else
+          # For ARM32, download pre-built Node.js and package manually
+          NODE_VERSION="v16.20.2"
+          mkdir -p dist
+          
+          # Use alternative source for ARM32 binary
+          wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-armv7l.tar.gz
+          tar -xzf node-${NODE_VERSION}-linux-armv7l.tar.gz
+          mv node-${NODE_VERSION}-linux-armv7l/bin/node dist/telegram-file-server-${{ matrix.os }}
+          chmod +x dist/telegram-file-server-${{ matrix.os }}
+          
+          # Package application files
+          mkdir -p build/app
+          cp -r src/* build/app/
+          cp -r node_modules build/app/
+          cp package.json build/app/
+          
+          # Create startup script
+          echo '#!/bin/sh
+          DIR=$(dirname "$0")
+          export NODE_PATH=$DIR/node_modules
+          exec $DIR/../telegram-file-server-android32 $DIR/index.js "$@"' > build/app/start.sh
+          
+          chmod +x build/app/start.sh
+          
+          cd build
+          tar -czf ../telegram-file-server-${{ matrix.os }}.tar.gz *
+          cd ..
+        fi
+        
     - name: Create Release
       uses: softprops/action-gh-release@v2
       if: success()
       with:
-        files: dist/telegram-file-server-${{ matrix.os }}*
+        files: |
+          telegram-file-server-${{ matrix.os }}*
+          telegram-file-server-${{ matrix.os }}.tar.gz
         tag_name: v${{ inputs.version }}-${{ matrix.os }}-${{ steps.date.outputs.date }}
         name: Telegram File Server ${{ matrix.os }} v${{ inputs.version }}
         body: |
           Version: ${{ inputs.version }}
           Platform: ${{ matrix.os }}
-          Architecture: ${{ matrix.arch }}
+          Architecture: ${{ matrix.target }}
           Build Date: ${{ steps.date.outputs.date }}
           
           ${{ inputs.description }}
           
           ### Notes
-          - This build is packaged for Linux ${{ matrix.arch }}
+          - This build is for Linux ${{ matrix.target }}
           - For use on Android with root access
-          - Includes pre-built Node.js binary
-          
-          ### Installation
-          1. Extract the tar.gz file
-          2. Run the start.sh script
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
@@ -116,5 +157,7 @@ jobs:
       if: always()
       with:
         name: telegram-file-server-${{ matrix.os }}
-        path: dist/telegram-file-server-${{ matrix.os }}*
+        path: |
+          telegram-file-server-${{ matrix.os }}*
+          telegram-file-server-${{ matrix.os }}.tar.gz
         compression-level: 0
