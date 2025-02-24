@@ -18,15 +18,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: win-x64
-            os: windows64
-            pkg_target: node16-win-x64
           - target: android-arm64
             os: android64
             pkg_target: node16-android-arm64
+            arch: arm64-v8a
           - target: android-arm
             os: android32
             pkg_target: node16-android-arm
+            arch: armeabi-v7a
 
     steps:
     - uses: actions/checkout@v4
@@ -40,45 +39,71 @@ jobs:
       with:
         node-version: 16
 
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+        add-to-path: false
+
     - name: Install build tools
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
           python3 \
-          mingw-w64
+          cmake
 
-    - name: Setup project
+    - name: Setup Android environment
       run: |
-        # Install nan explicitly first
-        npm install nan
-        
-        # Install remaining dependencies
-        npm install
-        
-        # Install pkg
-        npm install --save-dev pkg
+        export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME}"
+        echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME}" >> $GITHUB_ENV
+        echo "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
-    - name: Update package.json
+    - name: Install dependencies
+      run: |
+        # First install telegram dependencies
+        npm install --ignore-scripts
+        
+        # Install nan and other build tools
+        npm install --save-dev \
+          nan \
+          node-gyp \
+          @mapbox/node-pre-gyp \
+          pkg
+
+    - name: Configure node-gyp for Android
+      run: |
+        export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+        export TARGET=${{ matrix.target == 'android-arm64' && 'aarch64' || 'armv7a' }}-linux-androideabi
+        export API=21
+        
+        # Set Android specific compiler flags
+        export AR=$TOOLCHAIN/bin/llvm-ar
+        export CC=$TOOLCHAIN/bin/$TARGET$API-clang
+        export CXX=$TOOLCHAIN/bin/$TARGET$API-clang++
+        export LINK=$TOOLCHAIN/bin/$TARGET$API-clang++
+        export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+        export STRIP=$TOOLCHAIN/bin/llvm-strip
+        
+        # Build native modules
+        npm rebuild --target_arch=${{ matrix.target == 'android-arm64' && 'arm64' || 'arm' }} --target_platform=android
+
+    - name: Create pkg config
       run: |
         node -e "
           const fs = require('fs');
           const pkg = require('./package.json');
           
-          // Add pkg configuration
           pkg.bin = 'src/index.js';
           pkg.pkg = {
             assets: [
               'src/**/*',
               'config/**/*',
-              'node_modules/**/*'
+              'node_modules/**/*',
+              'build/Release/**/*'
             ],
             targets: [ '${{ matrix.pkg_target }}' ]
           };
-          
-          // Ensure nan is in dependencies
-          if (!pkg.dependencies) pkg.dependencies = {};
-          if (!pkg.dependencies.nan) pkg.dependencies.nan = '^2.18.0';
           
           fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
         "
@@ -88,8 +113,7 @@ jobs:
         npx pkg . \
           --target ${{ matrix.pkg_target }} \
           --output telegram-file-server-${{ matrix.os }} \
-          --public \
-          --compress GZip
+          --public
         
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -100,14 +124,15 @@ jobs:
         body: |
           Version: ${{ inputs.version }}
           Platform: ${{ matrix.os }}
+          Architecture: ${{ matrix.arch }}
           Build Date: ${{ steps.date.outputs.date }}
           
           ${{ inputs.description }}
           
           ### Notes
-          - Windows 64-bit build includes GUI support
-          - Android builds require root access
-          - All builds include required Telegram dependencies
+          - This build requires root access on Android
+          - Tested on Android API level 21 and above
+          - Built with NDK r25c
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
