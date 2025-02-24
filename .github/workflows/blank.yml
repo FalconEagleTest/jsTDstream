@@ -45,7 +45,8 @@ permissions:
   packages: write
 
 jobs:
-  build:
+  windows:
+    if: ${{ github.event.inputs.windows64 == 'true' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -69,13 +70,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y gcc-mingw-w64 g++-mingw-w64
 
-    - name: Prepare Build Environment
+    - name: Build Windows 64-bit Binary
       run: |
         mkdir -p build/assets
-
-    - name: Build Windows 64-bit Binary
-      if: ${{ github.event.inputs.windows64 == 'true' }}
-      run: |
         COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
         
@@ -95,9 +92,32 @@ jobs:
         CC: x86_64-w64-mingw32-gcc
         CXX: x86_64-w64-mingw32-g++
 
-    - name: Build Android ARM64 Binary
-      if: ${{ github.event.inputs.android64 == 'true' }}
+    - name: Upload Windows Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-assets
+        path: build/assets/*
+        retention-days: 1
+
+  android-arm64:
+    if: ${{ github.event.inputs.android64 == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 16
+
+    - name: Install dependencies
       run: |
+        npm ci --ignore-scripts
+        npm install --save-dev pkg
+
+    - name: Build Android ARM64 Binary
+      run: |
+        mkdir -p build/assets
         COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         
         COMPRESS_FLAG=""
@@ -113,10 +133,33 @@ jobs:
           $COMPRESS_FLAG \
           --no-native-build
 
+    - name: Upload Android ARM64 Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: android64-assets
+        path: build/assets/*
+        retention-days: 1
+
+  android-arm32:
+    if: ${{ github.event.inputs.android32 == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 16
+
+    - name: Install dependencies
+      run: |
+        npm ci --ignore-scripts
+        npm install --save-dev pkg
+
     - name: Build Android ARM32 Binary
-      if: ${{ github.event.inputs.android32 == 'true' }}
       run: |
         NODE_VERSION="v16.20.2"
+        mkdir -p build/assets
         
         # Download ARM32 binary
         wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-armv7l.tar.gz || \
@@ -184,6 +227,27 @@ jobs:
         
         # Move binary out for separate upload
         mv package/telegram-file-server-android32 build/assets/
+
+    - name: Upload Android ARM32 Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: android32-assets
+        path: build/assets/*
+        retention-days: 1
+
+  release:
+    needs: [windows, android-arm64, android-arm32]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get current date
+      id: date
+      run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: build/assets
+        merge-multiple: true
 
     - name: Create Unified Release
       uses: softprops/action-gh-release@v2
