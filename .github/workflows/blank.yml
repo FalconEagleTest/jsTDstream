@@ -11,7 +11,6 @@ on:
         description: 'Release description'
         required: false
 
-# Add permissions block
 permissions:
   contents: write
   packages: write
@@ -26,9 +25,11 @@ jobs:
           - target: arm64
             os: android64
             pkg_target: node16-linux-arm64
-          - target: arm
+            fetch_arch: arm64
+          - target: armv7
             os: android32
             pkg_target: node16-linux-armv7
+            fetch_arch: armv7
 
     steps:
     - uses: actions/checkout@v4
@@ -68,7 +69,6 @@ jobs:
       run: |
         echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME}" >> $GITHUB_ENV
         echo "PKG_CACHE_PATH=/tmp/pkg-cache" >> $GITHUB_ENV
-        echo "PKG_IGNORE_TAG=latest" >> $GITHUB_ENV
         mkdir -p /tmp/pkg-cache
         
         # Configure node-gyp
@@ -80,13 +80,11 @@ jobs:
         # Install dependencies without running scripts
         npm ci --ignore-scripts
         
-        # Install pkg and its dependencies
-        npm install --save-dev pkg pkg-fetch
-
-    - name: Fetch Node.js binary
-      run: |
-        # Fetch the prebuilt Node.js binary for the target platform
-        npx pkg-fetch --node-version v16.20.2 --platform linux --arch ${{ matrix.target }}
+        # Install pkg
+        npm install --save-dev pkg
+        
+        # List installed packages for debugging
+        npm list pkg
 
     - name: Create pkg config
       run: |
@@ -113,13 +111,13 @@ jobs:
         # Set pkg options
         export PKG_CACHE_PATH=/tmp/pkg-cache
         
-        # Build the binary
+        # Build the binary with verbose output
         npx pkg . \
           --target ${{ matrix.pkg_target }} \
           --output telegram-file-server-${{ matrix.os }} \
           --public \
           --no-bytecode \
-          --options no-warnings
+          --debug
         
     - name: Create Release
       uses: softprops/action-gh-release@v2
