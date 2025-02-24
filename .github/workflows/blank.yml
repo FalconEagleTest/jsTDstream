@@ -10,15 +10,15 @@ on:
       windows64:
         description: 'Build Windows 64-bit'
         type: boolean
-        default: true
+        default: false
       android64:
         description: 'Build Android ARM64'
         type: boolean
-        default: true
+        default: false
       android32:
         description: 'Build Android ARM32'
         type: boolean
-        default: true
+        default: false
       compression:
         description: 'Compression level'
         type: choice
@@ -26,7 +26,7 @@ on:
           - none
           - normal
           - max
-        default: 'max'
+        default: 'normal'
       target_system:
         description: 'Target system performance'
         type: choice
@@ -34,7 +34,7 @@ on:
           - low_end
           - normal
           - high_end
-        default: 'high_end'
+        default: 'normal'
       description:
         description: 'Release description'
         required: false
@@ -45,8 +45,7 @@ permissions:
   packages: write
 
 jobs:
-  windows:
-    if: ${{ github.event.inputs.windows64 == 'true' }}
+  build:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -70,94 +69,13 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y gcc-mingw-w64 g++-mingw-w64
 
-    - name: Update package.json
-      run: |
-        # Set compression and memory options based on inputs
-        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
-        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
-        
-        # Define memory limits based on target system
-        case $SYSTEM_TYPE in
-          "low_end")
-            MEM_LIMIT="512"
-            ASSETS_LEVEL="minimal"
-            ;;
-          "normal")
-            MEM_LIMIT="1024"
-            ASSETS_LEVEL="normal"
-            ;;
-          "high_end")
-            MEM_LIMIT="2048"
-            ASSETS_LEVEL="full"
-            ;;
-        esac
-        
-        # Define compression based on input
-        case $COMPRESS_LEVEL in
-          "none")
-            COMPRESS_OPT=""
-            ;;
-          "normal")
-            COMPRESS_OPT="GZip"
-            ;;
-          "max")
-            COMPRESS_OPT="Brotli"
-            ;;
-        esac
-        
-        node -e "
-          const fs = require('fs');
-          const pkg = require('./package.json');
-          
-          // Set basic configuration
-          pkg.bin = 'src/index.js';
-          
-          // Define assets based on system type
-          const assetConfigs = {
-            minimal: {
-              assets: ['src/**/*', 'config/**/*'],
-              scripts: [
-                'node_modules/telegram/**/*.js',
-                'node_modules/express/**/*.js',
-                'node_modules/body-parser/**/*.js'
-              ]
-            },
-            normal: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*.js'],
-              scripts: []
-            },
-            full: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*'],
-              scripts: []
-            }
-          };
-          
-          pkg.pkg = {
-            ...assetConfigs['${ASSETS_LEVEL}'],
-            targets: ['node16-win-x64'],
-            compress: '${COMPRESS_OPT}',
-            options: {
-              'max-old-space-size': ${MEM_LIMIT}
-            },
-            ignore: [
-              ...(('${ASSETS_LEVEL}' !== 'full') ? [
-                'node_modules/**/*.md',
-                'node_modules/**/*.txt',
-                'node_modules/**/test/**',
-                'node_modules/**/docs/**',
-                'node_modules/**/*.d.ts',
-                'node_modules/**/LICENSE*',
-                'node_modules/**/example/**'
-              ] : [])
-            ]
-          };
-          
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-        "
-
-    - name: Build Binary
+    - name: Prepare Build Environment
       run: |
         mkdir -p build/assets
+
+    - name: Build Windows 64-bit Binary
+      if: ${{ github.event.inputs.windows64 == 'true' }}
+      run: |
         COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
         
@@ -177,133 +95,9 @@ jobs:
         CC: x86_64-w64-mingw32-gcc
         CXX: x86_64-w64-mingw32-g++
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: build/assets/*
-        tag_name: v${{ inputs.version }}-windows64-${{ steps.date.outputs.date }}
-        name: Telegram File Server Windows64 v${{ inputs.version }}
-        body: |
-          Version: ${{ inputs.version }}
-          Platform: Windows 64-bit
-          Build Date: ${{ steps.date.outputs.date }}
-          Compression: ${{ inputs.compression }}
-          System Target: ${{ inputs.target_system }}
-          
-          ${{ inputs.description }}
-          
-          ### Notes
-          - Windows 64-bit executable
-          - Optimized for ${{ inputs.target_system }} systems
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  android-arm64:
-    if: ${{ github.event.inputs.android64 == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Get current date
-      id: date
-      run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
-    
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: 16
-
-    - name: Install dependencies
+    - name: Build Android ARM64 Binary
+      if: ${{ github.event.inputs.android64 == 'true' }}
       run: |
-        npm ci --ignore-scripts
-        npm install --save-dev pkg
-
-    - name: Update package.json
-      run: |
-        # Set compression and memory options based on inputs
-        COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
-        SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
-        
-        # Define memory limits based on target system
-        case $SYSTEM_TYPE in
-          "low_end")
-            MEM_LIMIT="512"
-            ASSETS_LEVEL="minimal"
-            ;;
-          "normal")
-            MEM_LIMIT="1024"
-            ASSETS_LEVEL="normal"
-            ;;
-          "high_end")
-            MEM_LIMIT="2048"
-            ASSETS_LEVEL="full"
-            ;;
-        esac
-        
-        # Define compression based on input
-        case $COMPRESS_LEVEL in
-          "none")
-            COMPRESS_OPT=""
-            ;;
-          "normal")
-            COMPRESS_OPT="GZip"
-            ;;
-          "max")
-            COMPRESS_OPT="Brotli"
-            ;;
-        esac
-        
-        node -e "
-          const fs = require('fs');
-          const pkg = require('./package.json');
-          
-          pkg.bin = 'src/index.js';
-          
-          const assetConfigs = {
-            minimal: {
-              assets: ['src/**/*', 'config/**/*'],
-              scripts: [
-                'node_modules/telegram/**/*.js',
-                'node_modules/express/**/*.js',
-                'node_modules/body-parser/**/*.js'
-              ]
-            },
-            normal: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*.js'],
-              scripts: []
-            },
-            full: {
-              assets: ['src/**/*', 'config/**/*', 'node_modules/**/*'],
-              scripts: []
-            }
-          };
-          
-          pkg.pkg = {
-            ...assetConfigs['${ASSETS_LEVEL}'],
-            targets: ['node16-linux-arm64'],
-            compress: '${COMPRESS_OPT}',
-            options: {
-              'max-old-space-size': ${MEM_LIMIT}
-            },
-            ignore: [
-              ...(('${ASSETS_LEVEL}' !== 'full') ? [
-                'node_modules/**/*.md',
-                'node_modules/**/*.txt',
-                'node_modules/**/test/**',
-                'node_modules/**/docs/**',
-                'node_modules/**/*.d.ts',
-                'node_modules/**/LICENSE*',
-                'node_modules/**/example/**'
-              ] : [])
-            ]
-          };
-          
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-        "
-
-    - name: Build Binary
-      run: |
-        mkdir -p build/assets
         COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         
         COMPRESS_FLAG=""
@@ -319,52 +113,10 @@ jobs:
           $COMPRESS_FLAG \
           --no-native-build
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: build/assets/*
-        tag_name: v${{ inputs.version }}-android64-${{ steps.date.outputs.date }}
-        name: Telegram File Server Android64 v${{ inputs.version }}
-        body: |
-          Version: ${{ inputs.version }}
-          Platform: Android ARM64
-          Build Date: ${{ steps.date.outputs.date }}
-          Compression: ${{ inputs.compression }}
-          System Target: ${{ inputs.target_system }}
-          
-          ${{ inputs.description }}
-          
-          ### Notes
-          - Linux ARM64 binary for Android use
-          - Requires root access
-          - Optimized for ${{ inputs.target_system }} systems
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  android-arm32:
-    if: ${{ github.event.inputs.android32 == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Get current date
-      id: date
-      run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
-    
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: 16
-
-    - name: Install dependencies
-      run: |
-        npm ci --ignore-scripts
-        npm install --save-dev pkg
-
-    - name: Build Binary
+    - name: Build Android ARM32 Binary
+      if: ${{ github.event.inputs.android32 == 'true' }}
       run: |
         NODE_VERSION="v16.20.2"
-        mkdir -p build/assets
         
         # Download ARM32 binary
         wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-armv7l.tar.gz || \
@@ -433,28 +185,42 @@ jobs:
         # Move binary out for separate upload
         mv package/telegram-file-server-android32 build/assets/
 
-    - name: Create Release
+    - name: Create Unified Release
       uses: softprops/action-gh-release@v2
       with:
         files: build/assets/*
-        tag_name: v${{ inputs.version }}-android32-${{ steps.date.outputs.date }}
-        name: Telegram File Server Android32 v${{ inputs.version }}
+        tag_name: v${{ inputs.version }}-${{ steps.date.outputs.date }}
+        name: Telegram File Server v${{ inputs.version }}
         body: |
-          Version: ${{ inputs.version }}
-          Platform: Android ARM32
+          ## Telegram File Server v${{ inputs.version }}
           Build Date: ${{ steps.date.outputs.date }}
           Compression: ${{ inputs.compression }}
           System Target: ${{ inputs.target_system }}
           
           ${{ inputs.description }}
           
-          ### Notes
-          - Linux ARM32 binary for Android use
+          ### Platforms
+          
+          #### Windows 64-bit
+          - Binary: telegram-file-server-windows64.exe
+          - Requires Windows 64-bit
+          - Optimized for ${{ inputs.target_system }} systems
+          
+          #### Android ARM64
+          - Binary: telegram-file-server-android64
+          - Requires Android with ARM64 support
+          - Requires root access
+          - Optimized for ${{ inputs.target_system }} systems
+          
+          #### Android ARM32
+          - Binary: telegram-file-server-android32
+          - Archive: telegram-file-server-android32.tar* (choose based on compression)
+          - Requires Android with ARM32 support
           - Requires root access
           - Optimized for ${{ inputs.target_system }} systems
           
           ### Installation
-          1. Extract the archive file
-          2. Run ./start.sh
+          - Download the appropriate binary for your platform
+          - For Android ARM32, extract the archive and run ./start.sh
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
