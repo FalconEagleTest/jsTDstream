@@ -54,6 +54,23 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y gcc-mingw-w64 g++-mingw-w64
 
+    - name: Update package.json
+      run: |
+        node -e '
+          const fs = require("fs");
+          const pkg = require("./package.json");
+          pkg.bin = "src/index.js";
+          pkg.pkg = {
+            assets: [
+              "src/**/*",
+              "node_modules/**/*",
+              "config/**/*"
+            ],
+            targets: ["node16-win-x64"]
+          };
+          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
+        '
+
     - name: Build Binary
       run: |
         mkdir -p build
@@ -103,6 +120,23 @@ jobs:
       run: |
         npm ci --ignore-scripts
         npm install --save-dev pkg
+
+    - name: Update package.json
+      run: |
+        node -e '
+          const fs = require("fs");
+          const pkg = require("./package.json");
+          pkg.bin = "src/index.js";
+          pkg.pkg = {
+            assets: [
+              "src/**/*",
+              "node_modules/**/*",
+              "config/**/*"
+            ],
+            targets: ["node16-linux-arm64"]
+          };
+          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
+        '
 
     - name: Build Binary
       run: |
