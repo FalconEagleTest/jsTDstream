@@ -467,9 +467,34 @@ jobs:
         mkdir -p build/assets
         mkdir -p android-libs
         
-        # Download libnode for Android
-        wget -q https://github.com/JaneaSystems/nodejs-mobile/releases/download/nodejs-mobile-v0.3.2/nodejs-mobile-v0.3.2-android-arm64.tar.gz
-        tar -xzf nodejs-mobile-v0.3.2-android-arm64.tar.gz -C android-libs
+        # Download libnode for Android (alternative source)
+        mkdir -p android-libs/lib
+        
+        # Alternative 1: Use Node.js prebuilt binaries
+        wget -q https://nodejs.org/dist/v16.20.2/node-v16.20.2-linux-armv7l.tar.gz
+        tar -xzf node-v16.20.2-linux-armv7l.tar.gz
+        
+        # Extract and prepare the library
+        cp node-v16.20.2-linux-armv7l/bin/node android-libs/lib/node
+        
+        # Create a simple wrapper library
+        cat > android-libs/lib/libnode.c << 'EOL'
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        #include <string.h>
+        #include <sys/types.h>
+        #include <sys/wait.h>
+        
+        int start_node(const char* script_path) {
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "%s/node %s", getenv("NODE_PATH"), script_path);
+            return system(cmd);
+        }
+        EOL
+        
+        # Compile the wrapper
+        gcc -shared -o android-libs/lib/libnode.so -fPIC android-libs/lib/libnode.c
         
         # Export the path for the Android.mk file
         export NODE_MODULES_PATH=$(pwd)/android-libs/lib
@@ -1036,9 +1061,34 @@ jobs:
         mkdir -p build/assets
         mkdir -p android-libs
         
-        # Download libnode for Android
-        wget -q https://github.com/JaneaSystems/nodejs-mobile/releases/download/nodejs-mobile-v0.3.2/nodejs-mobile-v0.3.2-android-arm.tar.gz
-        tar -xzf nodejs-mobile-v0.3.2-android-arm.tar.gz -C android-libs
+        # Download libnode for Android (alternative source)
+        mkdir -p android-libs/lib
+        
+        # Use Node.js prebuilt binaries
+        wget -q https://nodejs.org/dist/v16.20.2/node-v16.20.2-linux-armv7l.tar.gz
+        tar -xzf node-v16.20.2-linux-armv7l.tar.gz
+        
+        # Extract and prepare the library
+        cp node-v16.20.2-linux-armv7l/bin/node android-libs/lib/node
+        
+        # Create a simple wrapper library
+        cat > android-libs/lib/libnode.c << 'EOL'
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        #include <string.h>
+        #include <sys/types.h>
+        #include <sys/wait.h>
+        
+        int start_node(const char* script_path) {
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "%s/node %s", getenv("NODE_PATH"), script_path);
+            return system(cmd);
+        }
+        EOL
+        
+        # Compile the wrapper
+        gcc -shared -o android-libs/lib/libnode.so -fPIC android-libs/lib/libnode.c
         
         # Export the path for the Android.mk file
         export NODE_MODULES_PATH=$(pwd)/android-libs/lib
