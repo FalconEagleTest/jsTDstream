@@ -157,7 +157,7 @@ jobs:
 
     - name: Build Binary
       run: |
-        mkdir -p build
+        mkdir -p build/assets
         COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         SYSTEM_TYPE="${{ github.event.inputs.target_system }}"
         
@@ -168,7 +168,7 @@ jobs:
         
         npx pkg . \
           --target node16-win-x64 \
-          --output build/telegram-file-server-windows64.exe \
+          --output build/assets/telegram-file-server-windows64.exe \
           --public \
           --no-bytecode \
           $COMPRESS_FLAG \
@@ -180,7 +180,7 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        files: build/telegram-file-server-windows64.exe
+        files: build/assets/*
         tag_name: v${{ inputs.version }}-windows64-${{ steps.date.outputs.date }}
         name: Telegram File Server Windows64 v${{ inputs.version }}
         body: |
@@ -303,7 +303,7 @@ jobs:
 
     - name: Build Binary
       run: |
-        mkdir -p build
+        mkdir -p build/assets
         COMPRESS_LEVEL="${{ github.event.inputs.compression }}"
         
         COMPRESS_FLAG=""
@@ -313,7 +313,7 @@ jobs:
         
         npx pkg . \
           --target node16-linux-arm64 \
-          --output build/telegram-file-server-android64 \
+          --output build/assets/telegram-file-server-android64 \
           --public \
           --no-bytecode \
           $COMPRESS_FLAG \
@@ -322,7 +322,7 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        files: build/telegram-file-server-android64
+        files: build/assets/*
         tag_name: v${{ inputs.version }}-android64-${{ steps.date.outputs.date }}
         name: Telegram File Server Android64 v${{ inputs.version }}
         body: |
@@ -364,7 +364,7 @@ jobs:
     - name: Build Binary
       run: |
         NODE_VERSION="v16.20.2"
-        mkdir -p build
+        mkdir -p build/assets
         
         # Download ARM32 binary
         wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-armv7l.tar.gz || \
@@ -419,26 +419,24 @@ jobs:
         cd package
         case $COMPRESS_LEVEL in
           "none")
-            tar -cf ../build/telegram-file-server-android32.tar *
+            tar -cf ../build/assets/telegram-file-server-android32.tar *
             ;;
           "normal")
-            tar -czf ../build/telegram-file-server-android32.tar.gz *
+            tar -czf ../build/assets/telegram-file-server-android32.tar.gz *
             ;;
           "max")
-            tar -cJf ../build/telegram-file-server-android32.tar.xz *
+            tar -cJf ../build/assets/telegram-file-server-android32.tar.xz *
             ;;
         esac
         cd ..
         
         # Move binary out for separate upload
-        mv package/telegram-file-server-android32 build/
+        mv package/telegram-file-server-android32 build/assets/
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          build/telegram-file-server-android32
-          build/telegram-file-server-android32.tar*
+        files: build/assets/*
         tag_name: v${{ inputs.version }}-android32-${{ steps.date.outputs.date }}
         name: Telegram File Server Android32 v${{ inputs.version }}
         body: |
