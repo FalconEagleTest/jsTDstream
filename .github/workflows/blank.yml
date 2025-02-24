@@ -57,33 +57,29 @@ jobs:
 
     - name: Install Node dependencies
       run: |
-        # Add the required devDependencies to package.json
-        npm pkg set devDependencies.nan="^2.18.0"
-        npm pkg set devDependencies.node-gyp="^10.0.1"
-        npm pkg set devDependencies.pkg="^5.8.1"
-        
-        # Install all dependencies including the newly added ones
+        # Install all dependencies
         npm install
         
-        # Print installed versions for debugging
-        echo "Installed package versions:"
-        npm list nan node-gyp pkg
+        # Install pkg locally
+        npm install --save-dev pkg
 
-    - name: Setup pkg assets
+    - name: Create pkg config
       run: |
-        # Create a temporary package.json for pkg
+        # Add pkg configuration to package.json
         node -e "
+          const fs = require('fs');
           const pkg = require('./package.json');
+          pkg.bin = './src/index.js';
           pkg.pkg = {
             assets: [
               'src/**/*',
               'config/**/*',
-              'node_modules/**/*'
+              'node_modules/**/*',
+              'package.json'
             ],
-            targets: [ '${{ matrix.pkg_target }}' ],
-            outputPath: 'dist'
+            targets: [ '${{ matrix.pkg_target }}' ]
           };
-          require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
         "
 
     - name: Build Windows Binary
@@ -100,14 +96,10 @@ jobs:
         export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME}"
         export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
         
-        # Build using node-gyp
-        npx node-gyp rebuild \
-          --target_platform=android \
-          --target_arch=${{ contains(matrix.target, 'arm64') && 'arm64' || 'arm' }} \
-          --target_api=21
-        
         # Build the final binary
-        npx pkg . --target ${{ matrix.pkg_target }} --output telegram-file-server-${{ matrix.os }}
+        npx pkg . \
+          --target ${{ matrix.pkg_target }} \
+          --output telegram-file-server-${{ matrix.os }}
         
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -125,7 +117,7 @@ jobs:
           ### Notes
           - Windows 64-bit build includes both command line and GUI support
           - Android builds require root access to run
-          - All builds include native dependencies for Telegram client
+          - All builds include dependencies for Telegram client
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
