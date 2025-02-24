@@ -1,3 +1,4 @@
+name: Build Portable Binaries as Dynamic Libraries
 on:
   workflow_dispatch:
     inputs:
