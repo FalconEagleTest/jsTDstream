@@ -330,7 +330,7 @@ jobs:
       shell: bash
 
     - name: Upload binaries
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-binaries
         path: |
@@ -705,7 +705,7 @@ jobs:
         cd ../..
 
     - name: Upload binaries
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: android-arm32-binaries
         path: |
@@ -900,7 +900,7 @@ jobs:
         cd ../..
 
     - name: Upload binaries
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: android-arm64-binaries
         path: |
