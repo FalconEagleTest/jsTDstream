@@ -21,11 +21,9 @@ jobs:
           - target: arm64
             os: android64
             pkg_target: node16-linux-arm64
-            triple: aarch64-linux-android
           - target: arm
             os: android32
             pkg_target: node16-linux-armv7
-            triple: armv7a-linux-androideabi
 
     steps:
     - uses: actions/checkout@v4
@@ -45,7 +43,7 @@ jobs:
         ndk-version: r25c
         add-to-path: false
 
-    - name: Install build tools
+    - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -55,15 +53,14 @@ jobs:
 
     - name: Install dependencies
       run: |
-        # Install project dependencies
-        npm install
+        # Install nan first
+        npm install nan --no-save
         
-        # Install pkg locally
+        # Install dependencies without running scripts
+        npm install --ignore-scripts
+        
+        # Install pkg
         npm install --save-dev pkg
-        
-        # Show pkg version and targets
-        npx pkg --version
-        npx pkg --targets
 
     - name: Create pkg config
       run: |
@@ -78,20 +75,25 @@ jobs:
               'config/**/*',
               'node_modules/**/*'
             ],
-            targets: [ '${{ matrix.pkg_target }}' ]
+            targets: [ '${{ matrix.pkg_target }}' ],
+            scripts: []
           };
+          
+          // Add nan to dependencies if not present
+          if (!pkg.dependencies) pkg.dependencies = {};
+          if (!pkg.dependencies.nan) pkg.dependencies.nan = '^2.17.0';
           
           fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
         "
 
     - name: Build Binary
       run: |
-        echo "Building for target: ${{ matrix.pkg_target }}"
         npx pkg . \
           --target ${{ matrix.pkg_target }} \
           --output telegram-file-server-${{ matrix.os }} \
           --public \
-          --debug
+          --no-bytecode \
+          --options max_old_space_size=4096
         
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -102,15 +104,14 @@ jobs:
         body: |
           Version: ${{ inputs.version }}
           Platform: ${{ matrix.os }}
-          Architecture: ${{ matrix.arch }}
+          Architecture: ${{ matrix.target }}
           Build Date: ${{ steps.date.outputs.date }}
           
           ${{ inputs.description }}
           
           ### Notes
           - This build is compiled for Linux ${{ matrix.target }}
-          - Requires root access on Android
-          - Minimum Android API level: 21
+          - For use on Android with root access
           - Built with NDK r25c
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
