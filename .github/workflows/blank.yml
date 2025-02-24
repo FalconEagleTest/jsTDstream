@@ -1,4 +1,82 @@
-name: Build Portable Binaries as Dynamic Libraries
+# Create a simple Kodi implementation file
+mkdir -p build/assets/resources/kodi
+cat > build/assets/resources/kodi/node_launcher.py << 'EOL'
+"""
+Node.js Launcher for Kodi
+"""
+import os
+import sys
+import ctypes
+import xbmc
+import xbmcaddon
+
+class NodeJSLauncher:
+    """Simple launcher for Node.js in Kodi environment"""
+    
+    def __init__(self):
+        # Get addon info
+        addon = xbmcaddon.Addon()
+        self.addon_path = addon.getAddonInfo('path')
+        
+        # Configure paths
+        self.lib_path = os.path.join(self.addon_path, 'resources', 'lib')
+        self.node_path = os.path.join(self.lib_path, 'node')
+        self.node_lib = os.path.join(self.lib_path, 'libnode.so')
+        
+        # Set environment variables
+        os.environ['NODE_PATH'] = os.path.join(self.addon_path, 'node_modules')
+        os.environ['NODE_LIB_PATH'] = self.lib_path
+        
+        # Make node executable
+        try:
+            xbmc.executebuiltin(f'Notification(Node.js, Setting permissions...)')
+            os.chmod(self.node_path, 0o755)
+        except:
+            xbmc.log("Could not set executable permissions on node binary", xbmc.LOGERROR)
+            xbmc.executebuiltin(f'Notification(Node.js, Failed to set permissions)')
+    
+    def launch(self, script_path):
+        """Launch Node.js with the specified script"""
+        try:
+            # Try loading the library
+            lib = ctypes.CDLL(self.node_lib)
+            
+            # Get the full path to the script
+            if not os.path.isabs(script_path):
+                script_path = os.path.join(self.addon_path, script_path)
+            
+            # Initialize Node.js
+            xbmc.log(f"Starting Node.js with script: {script_path}", xbmc.LOGINFO)
+            xbmc.executebuiltin(f'Notification(Node.js, Starting server...)')
+            
+            # Call initialize_nodejs
+            lib.initialize_nodejs.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+            lib.initialize_nodejs.restype = ctypes.c_int
+            
+            # Prepare arguments
+            script_bytes = script_path.encode('utf-8')
+            c_args = (ctypes.c_char_p * 1)()
+            c_args[0] = script_bytes
+            
+            # Launch Node.js
+            result = lib.initialize_nodejs(script_bytes, 1, c_args)
+            
+            if result != 0:
+                xbmc.log(f"Node.js exited with code: {result}", xbmc.LOGERROR)
+                xbmc.executebuiltin(f'Notification(Node.js, Server failed to start)')
+                return False
+            
+            return True
+        except Exception as e:
+            xbmc.log(f"Error launching Node.js: {str(e)}", xbmc.LOGERROR)
+            xbmc.executebuiltin(f'Notification(Node.js, {str(e)})')
+            return False
+
+# Example usage
+if __name__ == "__main__":
+    launcher = NodeJSLauncher()
+    launcher.launch("src/index.js")
+EOLname: Build Portable Binaries as Dynamic Libraries
 
 on:
   workflow_dispatch:
@@ -447,13 +525,7 @@ jobs:
         LOCAL_SRC_FILES := ../src/native/node_wrapper.cpp
         LOCAL_LDLIBS := -llog
         LOCAL_CPPFLAGS := -fexceptions -frtti
-        LOCAL_SHARED_LIBRARIES := libnode
-        include $(BUILD_SHARED_LIBRARY)
-        
-        include $(CLEAR_VARS)
-        LOCAL_MODULE := libnode
-        LOCAL_SRC_FILES := $(NODE_MODULES_PATH)/libnode.so
-        include $(PREBUILT_SHARED_LIBRARY)' > jni/Android.mk
+        include $(BUILD_SHARED_LIBRARY)' > jni/Android.mk
         
         # Create Application.mk file
         echo 'APP_ABI := arm64-v8a
@@ -507,7 +579,45 @@ jobs:
         # Copy the built libraries
         mkdir -p build/assets/lib
         cp -L libs/armeabi-v7a/libnode_wrapper.so build/assets/lib/
-        cp -L android-libs/lib/libnode.so build/assets/lib/
+        cp android-libs/lib/node build/assets/lib/
+        
+        # Create stub libnode.so that just executes node binary
+        cat > build/node_stub.c << 'EOL'
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        #include <string.h>
+        #include <dlfcn.h>
+        
+        // Simple launcher that executes the node binary
+        __attribute__((visibility("default")))
+        int initialize_nodejs(const char* script_path, int argc, char** argv) {
+            char full_path[1024];
+            char* lib_path = getenv("NODE_LIB_PATH");
+            if (!lib_path) {
+                lib_path = ".";
+            }
+            
+            snprintf(full_path, sizeof(full_path), "%s/node %s", lib_path, script_path);
+            return system(full_path);
+        }
+        
+        __attribute__((visibility("default")))
+        int execute_js(const char* code, char* result, int result_size) {
+            // This is a stub - in a real implementation, we would pass the code to node
+            snprintf(result, result_size, "Executed: %s", code);
+            return 0;
+        }
+        
+        __attribute__((visibility("default")))
+        void cleanup_nodejs() {
+            // Nothing to do in this simple implementation
+            return;
+        }
+        EOL
+        
+        # Compile the stub library
+        ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang -shared -o build/assets/lib/libnode.so -fPIC build/node_stub.c
         
         # Create Python wrapper for the library
         echo '
@@ -762,7 +872,45 @@ jobs:
         # Copy the built libraries
         mkdir -p build/assets/lib
         cp -L libs/arm64-v8a/libnode_wrapper.so build/assets/lib/
-        cp -L android-libs/lib/libnode.so build/assets/lib/
+        cp android-libs/lib/node build/assets/lib/
+        
+        # Create stub libnode.so that just executes node binary
+        cat > build/node_stub.c << 'EOL'
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        #include <string.h>
+        #include <dlfcn.h>
+        
+        // Simple launcher that executes the node binary
+        __attribute__((visibility("default")))
+        int initialize_nodejs(const char* script_path, int argc, char** argv) {
+            char full_path[1024];
+            char* lib_path = getenv("NODE_LIB_PATH");
+            if (!lib_path) {
+                lib_path = ".";
+            }
+            
+            snprintf(full_path, sizeof(full_path), "%s/node %s", lib_path, script_path);
+            return system(full_path);
+        }
+        
+        __attribute__((visibility("default")))
+        int execute_js(const char* code, char* result, int result_size) {
+            // This is a stub - in a real implementation, we would pass the code to node
+            snprintf(result, result_size, "Executed: %s", code);
+            return 0;
+        }
+        
+        __attribute__((visibility("default")))
+        void cleanup_nodejs() {
+            // Nothing to do in this simple implementation
+            return;
+        }
+        EOL
+        
+        # Compile the stub library
+        ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang -shared -o build/assets/lib/libnode.so -fPIC build/node_stub.c
         
         # Create Python wrapper for the library
         echo '
@@ -1041,13 +1189,7 @@ jobs:
         LOCAL_SRC_FILES := ../src/native/node_wrapper.cpp
         LOCAL_LDLIBS := -llog
         LOCAL_CPPFLAGS := -fexceptions -frtti
-        LOCAL_SHARED_LIBRARIES := libnode
-        include $(BUILD_SHARED_LIBRARY)
-        
-        include $(CLEAR_VARS)
-        LOCAL_MODULE := libnode
-        LOCAL_SRC_FILES := $(NODE_MODULES_PATH)/libnode.so
-        include $(PREBUILT_SHARED_LIBRARY)' > jni/Android.mk
+        include $(BUILD_SHARED_LIBRARY)' > jni/Android.mk
         
         # Create Application.mk file
         echo 'APP_ABI := armeabi-v7a
